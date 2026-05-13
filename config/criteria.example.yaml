@@ -1,0 +1,112 @@
+# Copy to config/criteria.yaml and edit. criteria.yaml is gitignored.
+#
+# Lister uses this to filter and score jobs before submitting.
+
+profile:
+  # Your name as it should appear on applications.
+  name: "Jane Doe"
+  email: "jane@example.com"
+  phone: "+1-555-555-5555"
+  location: "Austin, TX"
+  # Used in cover letter salutation defaults.
+  pronouns: ""
+  # Public links that get auto-filled on application forms.
+  links:
+    linkedin: "https://www.linkedin.com/in/janedoe"
+    github: "https://github.com/janedoe"
+    portfolio: ""
+
+# Roles you'd actually take. Used for both search queries AND ranking.
+targets:
+  titles:
+    - "Software Engineer"
+    - "Backend Engineer"
+    - "Full Stack Engineer"
+  # Skills/keywords that boost a job's match score.
+  preferred_skills:
+    - "Python"
+    - "TypeScript"
+    - "AWS"
+    - "Postgres"
+  # Skills that are dealbreakers if required.
+  exclude_required_skills:
+    - "Salesforce"
+    - "SAP"
+  # Seniority levels to allow.
+  levels: ["mid", "senior"]   # one of: intern, junior, mid, senior, staff, principal
+
+filters:
+  # Locations. Use "Remote" for fully-remote roles; otherwise city or "City, ST".
+  locations:
+    - "Remote"
+    - "Austin, TX"
+  # Reject jobs that require relocation to anywhere not in `locations`.
+  remote_ok: true
+  # Minimum base salary you'll consider (USD). 0 to disable.
+  min_salary_usd: 130000
+  # Reject postings older than N days.
+  max_age_days: 14
+  # Skip if company is on this list.
+  exclude_companies:
+    - "ExampleBadCorp"
+  # Work authorization: rejects roles requiring sponsorship you can't get,
+  # or rejects roles requiring clearance you don't have.
+  needs_sponsorship: false
+  has_security_clearance: false
+
+# Which platforms to discover from. Toggle off any you don't want.
+platforms:
+  greenhouse:
+    enabled: true
+    # Companies whose Greenhouse boards to scan. Slug appears in their job board URL:
+    # https://boards.greenhouse.io/<slug>
+    companies:
+      - "stripe"
+      - "airbnb"
+      - "discord"
+  lever:
+    enabled: false
+    companies: []
+  ashby:
+    enabled: false
+    companies: []
+  workday:
+    enabled: false
+    companies: []
+  linkedin:
+    enabled: false
+    search_queries: []
+  indeed:
+    enabled: false
+    search_queries: []
+  ziprecruiter:
+    enabled: false
+    search_queries: []
+
+# Daily run behavior.
+daily:
+  # How many applications to submit per day, total across all platforms.
+  max_submissions_per_day: 5
+  # Cap per platform per day (prevents one platform from eating the budget).
+  max_per_platform: 1
+  # Only submit jobs scoring at least this (0-100).
+  min_match_score: 70
+  # Dry run: rank and tailor but don't actually submit. Recommended for first week.
+  dry_run: true
+
+# Resume sources. Both files must exist under config/resumes/.
+resumes:
+  granular: "config/resumes/granular.md"
+  formal: "config/resumes/formal.md"
+
+# Cover letter tone knobs passed to the LLM.
+cover_letter:
+  tone: "warm, direct, specific"
+  max_words: 250
+  # Any sentences/phrases you want included verbatim if relevant.
+  must_include: []
+  # Phrases the LLM should never use (clichés you hate).
+  banned_phrases:
+    - "I am writing to express my interest"
+    - "passionate"
+    - "synergy"

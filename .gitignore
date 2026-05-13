@@ -1,0 +1,52 @@
+# Secrets — never commit
+.env
+.env.local
+*.secret
+secrets/
+**/cookies.json
+**/storage_state.json
+
+# Persistent browser profiles (contain logged-in sessions)
+.browser-profiles/
+
+# Local state
+*.sqlite
+*.sqlite-journal
+*.db
+data/
+output/
+logs/
+
+# Resumes — user materials are private
+config/resumes/*.md
+config/resumes/*.pdf
+config/resumes/*.docx
+!config/resumes/.gitkeep
+!config/resumes/README.md
+
+# Local criteria (keep example in repo)
+config/criteria.yaml
+config/criteria.local.yaml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+
+# Playwright
+playwright-report/
+test-results/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
