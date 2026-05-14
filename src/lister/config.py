@@ -40,6 +40,9 @@ class Filters(BaseModel):
     exclude_companies: list[str] = Field(default_factory=list)
     needs_sponsorship: bool = False
     has_security_clearance: bool = False
+    # Free-text constraints passed verbatim to the LLM ranker. Use this for
+    # rules too nuanced to encode as flags (e.g. "Atlanta hybrid only if 100k+").
+    special_constraints: str = ""
 
 
 class PlatformConfig(BaseModel):

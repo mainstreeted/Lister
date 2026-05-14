@@ -44,6 +44,27 @@ with no remote option, salary below floor (if stated), seniority far above/below
 """
 
 
+class MockRanker:
+    """Keyword-only ranker used for development without an API key.
+
+    Counts hits of target titles + preferred skills inside the job text. Cheap,
+    deterministic, and good enough to verify discovery+ranking plumbing end to end.
+    """
+
+    def score(self, job: Job, criteria: Criteria, resume_summary: str) -> MatchScore:
+        text = f"{job.title}\n{job.description_text}".lower()
+        title_hits = sum(1 for t in criteria.targets.titles if t.lower() in text)
+        skill_hits = sum(1 for s in criteria.targets.preferred_skills if s.lower() in text)
+        # Linear scoring: weight title hits more heavily than skill mentions.
+        raw = min(100, 30 + 10 * title_hits + 5 * skill_hits)
+        reasons = [
+            f"title keyword hits: {title_hits}",
+            f"preferred skill hits: {skill_hits}",
+            "mock-ranker (no LLM)",
+        ]
+        return MatchScore(job_id=job.id, score=raw, reasons=reasons)
+
+
 class Ranker:
     def __init__(self, client: Anthropic | None = None) -> None:
         self.client = client or Anthropic()
@@ -86,9 +107,16 @@ def _build_user_message(job: Job, c: Criteria, resume_summary: str) -> str:
         "needs_sponsorship": c.filters.needs_sponsorship,
         "has_security_clearance": c.filters.has_security_clearance,
     }
+    special = c.filters.special_constraints.strip()
+    special_block = (
+        f"\nSPECIAL CONSTRAINTS (read carefully — these override defaults):\n{special}\n"
+        if special
+        else ""
+    )
     return (
         "CANDIDATE CRITERIA (JSON):\n"
-        f"{json.dumps(criteria_blob, indent=2)}\n\n"
+        f"{json.dumps(criteria_blob, indent=2)}\n"
+        f"{special_block}\n"
         "CANDIDATE RESUME SUMMARY:\n"
         f"{resume_summary}\n\n"
         "JOB POSTING:\n"

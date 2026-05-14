@@ -11,7 +11,7 @@ from rich.table import Table
 from . import db
 from .config import load_criteria, load_resume
 from .discovery import GreenhouseConnector
-from .ranker import Ranker, summarize_resume
+from .ranker import MockRanker, Ranker, summarize_resume
 
 load_dotenv()
 
@@ -34,7 +34,12 @@ def discover(
     min_score: int | None = typer.Option(
         None, "--min-score", help="Override criteria.daily.min_match_score"
     ),
-    rank: bool = typer.Option(True, "--rank/--no-rank", help="Run LLM ranker on discovered jobs"),
+    rank: bool = typer.Option(True, "--rank/--no-rank", help="Run ranker on discovered jobs"),
+    mock_ranker: bool = typer.Option(
+        False,
+        "--mock-ranker",
+        help="Use keyword-only ranker (no API key required). For development.",
+    ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Discover and rank jobs from configured platforms. Writes results to the local DB."""
@@ -55,7 +60,10 @@ def discover(
         console.print("[yellow]No platforms enabled in criteria.yaml.[/]")
         raise typer.Exit(1)
 
-    ranker = Ranker() if rank else None
+    if rank:
+        ranker = MockRanker() if mock_ranker else Ranker()
+    else:
+        ranker = None
     threshold = min_score if min_score is not None else criteria.daily.min_match_score
 
     discovered = 0
