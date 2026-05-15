@@ -52,7 +52,15 @@ cd "$TARGET"
 # venv
 if [[ ! -d .venv ]]; then
   say "Creating virtualenv at $TARGET/.venv"
-  "$PY" -m venv .venv
+  if ! "$PY" -m venv .venv 2>/dev/null; then
+    # Common on fresh Ubuntu/Debian: ensurepip / venv module not packaged.
+    pyver=$("$PY" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+    die "Failed to create virtualenv. On Ubuntu/Debian run:
+
+  sudo apt update && sudo apt install -y python${pyver}-venv
+
+Then re-run this installer."
+  fi
 fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
