@@ -42,7 +42,8 @@ def test_normalize_job_minimal():
     assert "Python" in job.description_text
 
 
-def test_coarse_filter_excludes_off_target_titles(tmp_path, monkeypatch):
+def test_coarse_filter_keeps_remote_and_filters_location():
+    """Coarse filter no longer rejects on title — that's the ranker's job."""
     from lister.config import (
         Criteria,
         CoverLetterConfig,
@@ -65,18 +66,43 @@ def test_coarse_filter_excludes_off_target_titles(tmp_path, monkeypatch):
         cover_letter=CoverLetterConfig(),
     )
     c = GreenhouseConnector()
-    eng = Job(
+    remote_eng = Job(
         id="t:1",
         platform=Platform.GREENHOUSE,
         platform_id="1",
         company="X",
-        title="Backend Engineer",
+        title="Account Executive",  # off-target title — should STILL pass
         location="Remote",
         remote=True,
         description_text="",
         apply_url="u",
         listing_url="u",
     )
-    sales = eng.model_copy(update={"id": "t:2", "title": "Account Executive"})
-    assert c._passes_coarse_filter(eng, crit) is True
-    assert c._passes_coarse_filter(sales, crit) is False
+    onsite = remote_eng.model_copy(
+        update={"id": "t:2", "location": "London, UK", "remote": False}
+    )
+    excluded = remote_eng.model_copy(update={"id": "t:3", "company": "Banned"})
+    crit_excl = crit.model_copy(
+        update={"filters": crit.filters.model_copy(update={"exclude_companies": ["Banned"]})}
+    )
+    assert c._passes_coarse_filter(remote_eng, crit) is True
+    assert c._passes_coarse_filter(onsite, crit) is False
+    assert c._passes_coarse_filter(excluded, crit_excl) is False
+
+
+def test_transient_http_error_classification():
+    from lister.discovery.greenhouse import _is_transient_http_error
+    import httpx as _httpx
+
+    # 404 is NOT transient.
+    resp_404 = _httpx.Response(404, request=_httpx.Request("GET", "https://x/"))
+    err_404 = _httpx.HTTPStatusError("nope", request=resp_404.request, response=resp_404)
+    assert _is_transient_http_error(err_404) is False
+
+    # 503 IS transient.
+    resp_503 = _httpx.Response(503, request=_httpx.Request("GET", "https://x/"))
+    err_503 = _httpx.HTTPStatusError("retry", request=resp_503.request, response=resp_503)
+    assert _is_transient_http_error(err_503) is True
+
+    # Timeouts are transient.
+    assert _is_transient_http_error(_httpx.TimeoutException("slow")) is True

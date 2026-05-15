@@ -14,7 +14,7 @@ from datetime import datetime
 
 import httpx
 from bs4 import BeautifulSoup
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from ..config import Criteria
 from ..models import Job, Platform
@@ -23,6 +23,13 @@ from .base import Connector
 log = logging.getLogger(__name__)
 
 API_TMPL = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs?content=true"
+
+
+def _is_transient_http_error(exc: BaseException) -> bool:
+    """Retry on network blips and 5xx — never on 4xx (won't get better)."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return isinstance(exc, (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError))
 
 
 class GreenhouseConnector(Connector):
@@ -47,7 +54,11 @@ class GreenhouseConnector(Connector):
             except Exception as e:
                 log.warning("greenhouse: failed to fetch %s: %s", slug, e)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception(_is_transient_http_error),
+    )
     def _get(self, url: str) -> dict:
         r = self.client.get(url)
         r.raise_for_status()
@@ -97,17 +108,21 @@ class GreenhouseConnector(Connector):
         )
 
     def _passes_coarse_filter(self, job: Job, c: Criteria) -> bool:
-        """Cheap pre-filter so we don't pay LLM cost on obvious mismatches."""
+        """Cheap pre-filter.
+
+        We deliberately do NOT filter on title here. ATS title strings drift
+        wildly across companies (e.g. "Manager, Customer Operations" vs.
+        "Operations Manager" vs. "Operations Lead") and a string-match filter
+        drops obvious hits. The ranker — keyword or LLM — decides title fit.
+
+        We DO filter on:
+          - excluded companies
+          - location (remote_ok or city match)
+          - max age
+        """
         if c.filters.exclude_companies and job.company in c.filters.exclude_companies:
             return False
 
-        # Title must contain at least one target keyword (case-insensitive).
-        if c.targets.titles:
-            tl = job.title.lower()
-            if not any(t.lower() in tl for t in c.targets.titles):
-                return False
-
-        # Location: remote_ok lets remote jobs through; otherwise must match a listed city.
         if c.filters.locations:
             if job.remote and c.filters.remote_ok:
                 pass
@@ -118,7 +133,6 @@ class GreenhouseConnector(Connector):
             else:
                 return False
 
-        # Age check.
         if c.filters.max_age_days and job.posted_at:
             age_days = (datetime.utcnow() - job.posted_at).days
             if age_days > c.filters.max_age_days:
