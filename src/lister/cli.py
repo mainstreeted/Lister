@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import shutil
+from enum import Enum
 from pathlib import Path
 
 import typer
@@ -11,7 +13,7 @@ from rich.table import Table
 from . import db
 from .config import load_criteria, load_resume
 from .discovery import GreenhouseConnector
-from .ranker import MockRanker, Ranker, summarize_resume
+from .ranker import ApiRanker, ClaudeCliRanker, MockRanker, summarize_resume
 
 load_dotenv()
 
@@ -20,11 +22,44 @@ console = Console()
 log = logging.getLogger("lister")
 
 
+class RankerChoice(str, Enum):
+    AUTO = "auto"
+    CLI = "cli"
+    API = "api"
+    MOCK = "mock"
+
+
 def _setup_logging(verbose: bool) -> None:
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+
+def _pick_ranker(choice: RankerChoice):
+    """Resolve which ranker to use. `auto` picks claude CLI if available."""
+    if choice == RankerChoice.MOCK:
+        console.print("[dim]ranker: mock (keyword-only, no LLM)[/]")
+        return MockRanker()
+    if choice == RankerChoice.API:
+        console.print("[dim]ranker: api (Anthropic SDK, requires ANTHROPIC_API_KEY)[/]")
+        return ApiRanker()
+    if choice == RankerChoice.CLI:
+        console.print("[dim]ranker: claude CLI (uses your Claude Code subscription)[/]")
+        return ClaudeCliRanker()
+    # auto: prefer CLI if installed, else API if key set, else mock with a warning.
+    if shutil.which("claude"):
+        console.print("[dim]ranker: claude CLI (auto-selected; uses your Claude subscription)[/]")
+        return ClaudeCliRanker()
+    import os
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        console.print("[dim]ranker: api (auto-selected; ANTHROPIC_API_KEY found)[/]")
+        return ApiRanker()
+    console.print(
+        "[yellow]No `claude` CLI on PATH and no ANTHROPIC_API_KEY set — "
+        "falling back to mock ranker. Install Claude Code or set an API key for real scoring.[/]"
+    )
+    return MockRanker()
 
 
 @app.command()
@@ -35,10 +70,16 @@ def discover(
         None, "--min-score", help="Override criteria.daily.min_match_score"
     ),
     rank: bool = typer.Option(True, "--rank/--no-rank", help="Run ranker on discovered jobs"),
+    ranker_choice: RankerChoice = typer.Option(
+        RankerChoice.AUTO,
+        "--ranker",
+        help="Which ranker to use: auto (prefer claude CLI), cli, api, or mock.",
+        case_sensitive=False,
+    ),
     mock_ranker: bool = typer.Option(
         False,
         "--mock-ranker",
-        help="Use keyword-only ranker (no API key required). For development.",
+        help="Shortcut for --ranker mock. Kept for backwards compatibility.",
     ),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
@@ -61,15 +102,16 @@ def discover(
         raise typer.Exit(1)
 
     if rank:
-        ranker = MockRanker() if mock_ranker else Ranker()
+        effective = RankerChoice.MOCK if mock_ranker else ranker_choice
+        ranker = _pick_ranker(effective)
     else:
         ranker = None
     threshold = min_score if min_score is not None else criteria.daily.min_match_score
 
+    # Phase 1: discover all jobs (no LLM calls).
+    all_jobs: list = []
     discovered = 0
     new_jobs = 0
-    scored = []
-
     with db.connect() as conn:
         for c in connectors:
             console.print(f"[cyan]Discovering via {c.platform_name}...[/]")
@@ -78,21 +120,27 @@ def discover(
                 inserted = db.upsert_job(conn, job)
                 if inserted:
                     new_jobs += 1
-                if ranker:
-                    score = ranker.score(job, criteria, resume_summary)
-                    db.save_score(conn, score)
-                    scored.append((job, score))
+                all_jobs.append(job)
 
     console.print(
         f"[green]Discovered {discovered} jobs ({new_jobs} new) "
         f"across {len(connectors)} platform(s).[/]"
     )
 
-    if not scored:
+    if not ranker or not all_jobs:
         return
 
-    scored.sort(key=lambda x: x[1].score, reverse=True)
-    top = scored[:limit]
+    # Phase 2: rank in one shot (batched if the ranker supports it).
+    console.print(f"[cyan]Ranking {len(all_jobs)} jobs...[/]")
+    scores = ranker.score_many(all_jobs, criteria, resume_summary)
+
+    with db.connect() as conn:
+        for s in scores:
+            db.save_score(conn, s)
+
+    pairs = list(zip(all_jobs, scores))
+    pairs.sort(key=lambda x: x[1].score, reverse=True)
+    top = pairs[:limit]
 
     table = Table(title=f"Top matches (>= {threshold} highlighted)")
     table.add_column("Score", justify="right", style="bold")

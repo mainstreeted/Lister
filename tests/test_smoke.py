@@ -106,3 +106,64 @@ def test_transient_http_error_classification():
 
     # Timeouts are transient.
     assert _is_transient_http_error(_httpx.TimeoutException("slow")) is True
+
+
+def test_batch_response_parsing_round_trips_job_ids():
+    """ClaudeCliRanker._parse_batch_response should pair scores back to jobs by id."""
+    from lister.ranker import _parse_batch_response
+
+    j1 = Job(
+        id="greenhouse:foo:1",
+        platform=Platform.GREENHOUSE,
+        platform_id="1",
+        company="Foo",
+        title="Ops Manager",
+        location="Remote",
+        remote=True,
+        description_text="",
+        apply_url="u",
+        listing_url="u",
+    )
+    j2 = j1.model_copy(update={"id": "greenhouse:foo:2", "title": "AE"})
+
+    # Model output with prose around the JSON array — common in CLI mode.
+    text = """Here are the scores for both jobs:
+
+[
+  {"job_id": "greenhouse:foo:1", "score": 82, "reasons": ["title match", "remote"], "dealbreakers": []},
+  {"job_id": "greenhouse:foo:2", "score": 15, "reasons": ["sales role"], "dealbreakers": ["wrong function"]}
+]
+
+Hope that helps."""
+    scores = _parse_batch_response(text, [j1, j2])
+    assert len(scores) == 2
+    assert scores[0].job_id == "greenhouse:foo:1"
+    assert scores[0].score == 82
+    assert scores[1].score == 15
+    assert "wrong function" in scores[1].dealbreakers
+
+
+def test_batch_response_handles_missing_job():
+    """If the model drops a job from its response, we synthesize a placeholder."""
+    from lister.ranker import _parse_batch_response
+
+    j1 = Job(
+        id="a",
+        platform=Platform.GREENHOUSE,
+        platform_id="1",
+        company="A",
+        title="X",
+        location="Remote",
+        remote=True,
+        description_text="",
+        apply_url="u",
+        listing_url="u",
+    )
+    j2 = j1.model_copy(update={"id": "b"})
+    # Only job "a" appears in output.
+    text = '[{"job_id": "a", "score": 50, "reasons": [], "dealbreakers": []}]'
+    scores = _parse_batch_response(text, [j1, j2])
+    assert len(scores) == 2
+    assert scores[0].score == 50
+    assert scores[1].score == 0
+    assert "missing" in scores[1].reasons[0].lower()
