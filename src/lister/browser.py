@@ -8,9 +8,12 @@ subsequent runs are fully headless.
 from __future__ import annotations
 
 import logging
+import os
 import random
+import shutil
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator
 
 from playwright.sync_api import BrowserContext, Page, sync_playwright
@@ -52,24 +55,59 @@ def browser_context(platform: str, headless: bool = True) -> Iterator[BrowserCon
     via ``lister login <platform>`` (which passes ``headless=False``). Cookies
     are then stored at ``.browser-profiles/<platform>/`` and reused on every
     subsequent headless run.
+
+    Uses a system-installed Chrome/Chromium if one is found (helpful when
+    Playwright's bundled chromium doesn't support the host OS yet). Override
+    with ``LISTER_CHROME_PATH=/path/to/binary``.
     """
     profile_dir = PROFILES_DIR / platform
     profile_dir.mkdir(parents=True, exist_ok=True)
 
+    launch_kwargs: dict = dict(
+        user_data_dir=str(profile_dir),
+        headless=headless,
+        args=LAUNCH_ARGS,
+        viewport={"width": 1366, "height": 768},
+        user_agent=DEFAULT_UA,
+        locale="en-US",
+    )
+    exec_path = _find_system_chromium()
+    if exec_path:
+        log.info("browser: using system Chrome at %s", exec_path)
+        launch_kwargs["executable_path"] = exec_path
+
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
-            headless=headless,
-            args=LAUNCH_ARGS,
-            viewport={"width": 1366, "height": 768},
-            user_agent=DEFAULT_UA,
-            locale="en-US",
-        )
+        context = p.chromium.launch_persistent_context(**launch_kwargs)
         context.add_init_script(STEALTH_INIT_SCRIPT)
         try:
             yield context
         finally:
             context.close()
+
+
+def _find_system_chromium() -> str | None:
+    """Locate a system Chrome/Chromium binary, or None to use Playwright's bundle.
+
+    Checked in order:
+      1. ``LISTER_CHROME_PATH`` env var (explicit override)
+      2. Common Debian/Ubuntu install paths for Google Chrome and Chromium
+      3. ``which`` on the user's PATH
+    """
+    override = os.environ.get("LISTER_CHROME_PATH", "").strip()
+    if override:
+        if Path(override).exists():
+            return override
+        log.warning("LISTER_CHROME_PATH=%s does not exist; ignoring", override)
+    for candidate in (
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+        "/snap/bin/chromium",
+    ):
+        if Path(candidate).exists():
+            return candidate
+    return shutil.which("google-chrome") or shutil.which("chromium")
 
 
 def human_pause(min_s: float = 0.3, max_s: float = 1.0) -> None:
