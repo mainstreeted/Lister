@@ -72,6 +72,14 @@ pip install --quiet -e ".[dev]"
 # Make sure config dirs exist (they're gitignored)
 mkdir -p config/resumes data
 
+# Playwright browser binary (~170MB; idempotent — fast if already present).
+say "Installing Playwright Chromium browser (~170MB; one-time)"
+if ! python -m playwright install chromium >/dev/null 2>&1; then
+    say "WARNING: 'playwright install chromium' failed."
+    say "If browser-based discovery (LinkedIn etc.) errors out, run manually:"
+    say "  source .venv/bin/activate && playwright install chromium"
+fi
+
 cat <<NEXT
 
 \033[1;32m✓ Lister is installed at:\033[0m $TARGET

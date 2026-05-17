@@ -12,7 +12,7 @@ from rich.table import Table
 
 from . import db
 from .config import load_criteria, load_resume
-from .discovery import GreenhouseConnector
+from .discovery import GreenhouseConnector, LinkedInConnector
 from .ranker import ApiRanker, ClaudeCliRanker, MockRanker, summarize_resume
 
 load_dotenv()
@@ -95,7 +95,9 @@ def discover(
     connectors = []
     if criteria.platforms.greenhouse.enabled:
         connectors.append(GreenhouseConnector())
-    # TODO: lever, ashby, workday, linkedin, indeed, ziprecruiter
+    if criteria.platforms.linkedin.enabled:
+        connectors.append(LinkedInConnector())
+    # TODO: indeed, ziprecruiter, lever, ashby, workday
 
     if not connectors:
         console.print("[yellow]No platforms enabled in criteria.yaml.[/]")
@@ -182,6 +184,82 @@ def status() -> None:
     for r in rows:
         table.add_row(r["job_id"], r["status"], str(r["score"] or ""), r["submitted_at"] or "")
     console.print(table)
+
+
+LOGIN_TARGETS = {
+    "linkedin": (
+        "https://www.linkedin.com/login",
+        "https://www.linkedin.com/feed/",
+    ),
+    "indeed": (
+        "https://secure.indeed.com/account/login",
+        "https://www.indeed.com/",
+    ),
+    "ziprecruiter": (
+        "https://www.ziprecruiter.com/login",
+        "https://www.ziprecruiter.com/jobs",
+    ),
+}
+
+
+@app.command()
+def login(
+    platform: str = typer.Argument(
+        ..., help="Platform to log in to: linkedin | indeed | ziprecruiter"
+    ),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """One-time interactive login. Opens a visible browser; you sign in by hand.
+
+    Cookies persist under ``.browser-profiles/<platform>/`` so subsequent
+    headless discovery runs reuse the same session — no re-auth needed.
+    """
+    _setup_logging(verbose)
+    key = platform.lower().strip()
+    if key not in LOGIN_TARGETS:
+        console.print(
+            f"[red]Unknown platform '{platform}'. Choose one of: "
+            f"{', '.join(LOGIN_TARGETS)}[/]"
+        )
+        raise typer.Exit(1)
+
+    login_url, verify_url = LOGIN_TARGETS[key]
+
+    from .browser import browser_context, goto_with_retry
+
+    console.print(f"[cyan]Opening a browser window for {key} login...[/]")
+    console.print(
+        f"[yellow]Log in to {key} in the window that appears. "
+        "Once you see your home feed, come back to this terminal and press Enter.[/]"
+    )
+
+    with browser_context(key, headless=False) as ctx:
+        page = ctx.new_page()
+        try:
+            goto_with_retry(page, login_url)
+        except Exception as e:
+            console.print(f"[red]Could not open {login_url}: {e}[/]")
+            raise typer.Exit(1)
+
+        input("Press Enter once you're logged in: ")
+
+        try:
+            goto_with_retry(page, verify_url)
+        except Exception as e:
+            console.print(f"[red]Verification navigation failed: {e}[/]")
+            raise typer.Exit(1)
+
+        if any(x in page.url for x in ("/login", "/uas/", "/authwall")):
+            console.print(
+                f"[red]Verification failed — still on a login/auth wall ({page.url}). "
+                "Try again; make sure you complete any 2FA prompts.[/]"
+            )
+            raise typer.Exit(1)
+
+    console.print(
+        f"[green]✓ {key} session saved. "
+        "Run `lister discover` and it will use this login automatically.[/]"
+    )
 
 
 if __name__ == "__main__":

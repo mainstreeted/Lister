@@ -143,6 +143,44 @@ Hope that helps."""
     assert "wrong function" in scores[1].dealbreakers
 
 
+def test_linkedin_jsonld_extraction():
+    """LinkedIn embeds JobPosting JSON-LD; we should pull it out of any wrapper."""
+    from lister.discovery.linkedin import _find_job_posting, _parse_jsonld, _parse_location
+
+    # Bare object
+    bare = {"@type": "JobPosting", "title": "Test"}
+    assert _find_job_posting(bare) == bare
+
+    # Wrapped in @graph
+    wrapped = {"@graph": [{"@type": "Organization"}, {"@type": "JobPosting", "title": "X"}]}
+    assert _find_job_posting(wrapped) == {"@type": "JobPosting", "title": "X"}
+
+    # Real-ish LinkedIn page snippet
+    html = """
+    <html><head>
+    <script type="application/ld+json">
+    {"@context":"https://schema.org","@type":"JobPosting","title":"Customer Success Manager",
+     "description":"<p>Lead enterprise accounts.</p>",
+     "hiringOrganization":{"@type":"Organization","name":"Acme"},
+     "jobLocation":{"@type":"Place","address":{"addressLocality":"Remote","addressCountry":"US"}},
+     "datePosted":"2026-05-01"}
+    </script>
+    </head><body></body></html>
+    """
+    data = _parse_jsonld(html)
+    assert data is not None
+    assert data["title"] == "Customer Success Manager"
+    assert data["hiringOrganization"]["name"] == "Acme"
+
+    # Location parsing handles dict, list-of-dict, and string.
+    assert _parse_location("Remote") == "Remote"
+    assert _parse_location({"address": {"addressLocality": "Austin", "addressRegion": "TX"}}) == "Austin, TX"
+    assert _parse_location(
+        [{"address": {"addressLocality": "A"}}, {"address": {"addressLocality": "B"}}]
+    ) == "A; B"
+    assert _parse_location(None) is None
+
+
 def test_batch_response_handles_missing_job():
     """If the model drops a job from its response, we synthesize a placeholder."""
     from lister.ranker import _parse_batch_response
