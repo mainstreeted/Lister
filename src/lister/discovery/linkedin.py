@@ -51,9 +51,11 @@ class LinkedInConnector(Connector):
             return
 
         with browser_context("linkedin", headless=True) as ctx:
-            page = ctx.new_page()
-
-            if not self._is_logged_in(page):
+            auth_page = ctx.new_page()
+            auth_page.set_default_navigation_timeout(20000)
+            authed = self._is_logged_in(auth_page)
+            auth_page.close()
+            if not authed:
                 log.error(
                     "LinkedIn session not authenticated. "
                     "Run: lister login linkedin"
@@ -61,12 +63,27 @@ class LinkedInConnector(Connector):
                 return
 
             for query in cfg.search_queries:
+                # Fresh page per query — isolates failures and stops stale
+                # state from one query polluting the next.
+                page = ctx.new_page()
+                page.set_default_navigation_timeout(20000)
+                page.set_default_timeout(20000)
+
                 try:
                     job_ids = self._search(page, query)
                     log.info("linkedin: %r → %d job ids", query, len(job_ids))
                 except Exception as e:
-                    log.warning("linkedin: search failed for %r: %s", query, e)
-                    continue
+                    log.error(
+                        "linkedin: search failed for %r: %s. "
+                        "Browser may be dead — aborting remaining LinkedIn queries.",
+                        query,
+                        e,
+                    )
+                    try:
+                        page.close()
+                    except Exception:
+                        pass
+                    return  # short-circuit; don't waste minutes retrying a dead browser
 
                 for jid in job_ids[: self.jobs_per_query]:
                     try:
@@ -76,6 +93,11 @@ class LinkedInConnector(Connector):
                     except Exception as e:
                         log.warning("linkedin: detail fetch failed for %s: %s", jid, e)
                     human_pause()
+
+                try:
+                    page.close()
+                except Exception:
+                    pass
 
     # ---------- auth ----------
 

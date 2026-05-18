@@ -36,7 +36,23 @@ LAUNCH_ARGS = [
     "--no-sandbox",
     "--disable-dev-shm-usage",
     "--disable-features=IsolateOrigins,site-per-process",
+    # Stability flags for WSL / containerized Chrome — these prevent the most
+    # common crashes when running headless Chrome on a system without a
+    # proper GPU or with limited /dev/shm.
+    "--disable-gpu",
+    "--disable-software-rasterizer",
+    "--disable-extensions",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-ipc-flooding-protection",
+    "--no-first-run",
+    "--no-default-browser-check",
 ]
+
+# Default per-page timeouts. Pages that aren't responsive within this many
+# milliseconds get aborted — keeps the run from hanging when the browser dies.
+DEFAULT_NAV_TIMEOUT_MS = 20000
 
 # Run on every new page to remove the most obvious automation tells.
 STEALTH_INIT_SCRIPT = """
