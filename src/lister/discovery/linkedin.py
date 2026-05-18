@@ -112,21 +112,105 @@ class LinkedInConnector(Connector):
 
     # ---------- search ----------
 
+    # CSS selectors used to find rendered job cards. LinkedIn ships at least three
+    # different list layouts; try them all.
+    JOB_CARD_SELECTORS = (
+        "[data-occludable-job-id]",
+        "li[data-job-id]",
+        "ul.jobs-search__results-list li",
+        ".scaffold-layout__list li",
+    )
+
     def _search(self, page, query: str) -> list[str]:
         url = SEARCH_URL_TMPL.format(kw=quote_plus(query))
         goto_with_retry(page, url)
-        human_pause(0.8, 1.4)
 
-        # LinkedIn lazy-loads cards on scroll. A few scrolls catch most of page 1.
-        for _ in range(4):
-            page.mouse.wheel(0, 2500)
-            human_pause(0.25, 0.6)
+        # Wait for the actual results list to render. If LinkedIn shows a
+        # bot-detection wall, this selector never appears and we fall through
+        # to the empty case below (which saves a screenshot).
+        rendered = False
+        for selector in self.JOB_CARD_SELECTORS:
+            try:
+                page.wait_for_selector(selector, timeout=8000)
+                rendered = True
+                break
+            except Exception:
+                continue
+        if not rendered:
+            log.warning(
+                "linkedin: no recognizable results list for %r — page may be a "
+                "bot-wall or LinkedIn changed its layout",
+                query,
+            )
 
-        html = page.content()
-        # Job IDs surface in multiple formats; collect all matches and dedupe.
-        ids = set(re.findall(r"jobPosting:(\d+)", html))
-        ids |= set(re.findall(r"/jobs/view/(\d+)", html))
-        return sorted(ids, reverse=True)  # newest IDs first
+        human_pause(0.6, 1.0)
+
+        # Scroll the jobs list container itself (not the page body) — this is
+        # what triggers LinkedIn's lazy loader.
+        for _ in range(5):
+            page.evaluate(
+                """() => {
+                    const list = document.querySelector(
+                        '.jobs-search__results-list, .scaffold-layout__list, '
+                        + '.jobs-search-results-list, [data-test-paginated-list]'
+                    );
+                    if (list) list.scrollTop = list.scrollHeight;
+                    else window.scrollBy(0, 1500);
+                }"""
+            )
+            human_pause(0.4, 0.9)
+
+        # Extract IDs from rendered DOM elements first (most reliable).
+        ids: list[str] = []
+        for selector in self.JOB_CARD_SELECTORS:
+            try:
+                attr_ids = page.eval_on_selector_all(
+                    selector,
+                    """els => els.map(e =>
+                        e.getAttribute('data-occludable-job-id')
+                        || e.getAttribute('data-job-id')
+                        || (e.querySelector('a[href*=\"/jobs/view/\"]') || {})
+                              .getAttribute && (e.querySelector('a[href*=\"/jobs/view/\"]').getAttribute('href')||'').match(/jobs\\/view\\/(\\d+)/)?.[1]
+                    ).filter(Boolean)""",
+                )
+                if attr_ids:
+                    ids.extend(attr_ids)
+                    break
+            except Exception as e:
+                log.debug("linkedin: selector %s failed: %s", selector, e)
+
+        # Fallback: raw-HTML regex (catches SEO-baked links too — noisy but
+        # better than nothing if the DOM extraction missed something).
+        if not ids:
+            html = page.content()
+            ids = list(set(re.findall(r"/jobs/view/(\d+)", html)))
+
+        # Dedupe, preserve order, drop empties.
+        seen = set()
+        unique: list[str] = []
+        for x in ids:
+            x = str(x).strip()
+            if x and x not in seen:
+                seen.add(x)
+                unique.append(x)
+
+        if not unique:
+            self._save_debug_screenshot(page, query)
+
+        return unique
+
+    def _save_debug_screenshot(self, page, query: str) -> None:
+        """Dump a screenshot when a search returns nothing so we can see why."""
+        try:
+            from ..config import REPO_ROOT
+
+            slug = re.sub(r"[^a-z0-9]+", "-", query.lower())[:40]
+            out = REPO_ROOT / "data" / f"linkedin-debug-{slug}.png"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(out), full_page=False)
+            log.warning("linkedin: 0 results for %r — screenshot saved to %s", query, out)
+        except Exception as e:
+            log.warning("linkedin: failed to save debug screenshot: %s", e)
 
     # ---------- detail ----------
 

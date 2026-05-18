@@ -65,40 +65,60 @@ window.chrome = window.chrome || {runtime: {}};
 
 @contextmanager
 def browser_context(platform: str, headless: bool = True) -> Iterator[BrowserContext]:
-    """Open a persistent Chromium context keyed to a platform name.
+    """Open a fresh Chromium context per call, hydrated with saved cookies.
 
-    The first time this is used per platform, the user logs in interactively
-    via ``lister login <platform>`` (which passes ``headless=False``). Cookies
-    are then stored at ``.browser-profiles/<platform>/`` and reused on every
-    subsequent headless run.
-
-    Uses a system-installed Chrome/Chromium if one is found (helpful when
-    Playwright's bundled chromium doesn't support the host OS yet). Override
-    with ``LISTER_CHROME_PATH=/path/to/binary``.
+    Architecture (changed from earlier prototype):
+      - We no longer keep Chrome's whole persistent user-data-dir between runs
+        — that directory grows large and aggressive writes to it on WSL's ext4
+        can corrupt the filesystem.
+      - Instead we save only cookies + localStorage to a small JSON file
+        (``.browser-profiles/<platform>-storage.json``). Each run launches a
+        clean ephemeral Chrome that loads that JSON, runs, writes it back.
+      - Login stays sticky across runs; disk usage stays trivial.
     """
-    profile_dir = PROFILES_DIR / platform
-    profile_dir.mkdir(parents=True, exist_ok=True)
+    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    cookies_path = PROFILES_DIR / f"{platform}-storage.json"
 
     launch_kwargs: dict = dict(
-        user_data_dir=str(profile_dir),
         headless=headless,
         args=LAUNCH_ARGS,
-        viewport={"width": 1366, "height": 768},
-        user_agent=DEFAULT_UA,
-        locale="en-US",
     )
     exec_path = _find_system_chromium()
     if exec_path:
         log.info("browser: using system Chrome at %s", exec_path)
         launch_kwargs["executable_path"] = exec_path
 
+    context_kwargs: dict = dict(
+        viewport={"width": 1366, "height": 768},
+        user_agent=DEFAULT_UA,
+        locale="en-US",
+    )
+    if cookies_path.exists():
+        context_kwargs["storage_state"] = str(cookies_path)
+    else:
+        log.info(
+            "browser: no saved cookies for %s — login is interactive on first run",
+            platform,
+        )
+
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(**launch_kwargs)
-        context.add_init_script(STEALTH_INIT_SCRIPT)
+        browser = p.chromium.launch(**launch_kwargs)
         try:
-            yield context
+            context = browser.new_context(**context_kwargs)
+            context.add_init_script(STEALTH_INIT_SCRIPT)
+            context.set_default_navigation_timeout(DEFAULT_NAV_TIMEOUT_MS)
+            try:
+                yield context
+                # Save cookies back so the next run is non-interactive.
+                try:
+                    context.storage_state(path=str(cookies_path))
+                    log.debug("browser: saved storage state to %s", cookies_path)
+                except Exception as e:
+                    log.warning("browser: could not save storage state: %s", e)
+            finally:
+                context.close()
         finally:
-            context.close()
+            browser.close()
 
 
 def _find_system_chromium() -> str | None:
