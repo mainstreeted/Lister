@@ -209,25 +209,23 @@ def _email_body_text(msg) -> str:
 
 
 def parse_indeed(msg) -> Iterator[Job]:
-    html = _email_body_html(msg)
-    if not html:
-        return
-    soup = BeautifulSoup(html, "lxml")
     subject = msg.get("Subject", "") or ""
+    urls_with_ctx = _collect_links(msg)
+    indeed_urls = [(href, text, ctx) for href, text, ctx in urls_with_ctx if "indeed.com" in href.lower()]
+    log.debug("indeed parser: %d total / %d indeed urls in %r",
+              len(urls_with_ctx), len(indeed_urls), subject[:80])
+    for href, _, ctx in indeed_urls[:5]:
+        log.debug("  indeed url sample: %s", href[:200])
+
     seen: set[str] = set()
-    for anchor in soup.find_all("a", href=True):
-        href = anchor["href"]
+    for href, anchor_text, ctx in indeed_urls:
         jk = _extract_indeed_jk(href)
         if not jk or jk in seen:
             continue
-        title = (anchor.get_text(strip=True) or anchor.get("aria-label", "")).strip()
-        # Skip junk anchors (logo links, "View all", footer, etc.)
-        if not title or len(title) < 5 or len(title) > 200:
-            continue
-        if any(skip in title.lower() for skip in ("view all", "unsubscribe", "view in browser")):
+        title = anchor_text or _extract_title_near(ctx, fallback=f"Indeed job {jk}")
+        if _is_junk_title(title):
             continue
         seen.add(jk)
-        ctx = _surrounding_context(anchor)
         company = _guess_company(ctx, title)
         location = _guess_location(ctx)
         canonical = f"https://www.indeed.com/viewjob?jk={jk}"
@@ -249,24 +247,23 @@ def parse_indeed(msg) -> Iterator[Job]:
 
 
 def parse_ziprecruiter(msg) -> Iterator[Job]:
-    html = _email_body_html(msg)
-    if not html:
-        return
-    soup = BeautifulSoup(html, "lxml")
     subject = msg.get("Subject", "") or ""
+    urls_with_ctx = _collect_links(msg)
+    zr_urls = [(href, text, ctx) for href, text, ctx in urls_with_ctx if "ziprecruiter" in href.lower()]
+    log.debug("zr parser: %d total / %d zr urls in %r",
+              len(urls_with_ctx), len(zr_urls), subject[:80])
+    for href, _, ctx in zr_urls[:5]:
+        log.debug("  zr url sample: %s", href[:200])
+
     seen: set[str] = set()
-    for anchor in soup.find_all("a", href=True):
-        href = anchor["href"]
+    for href, anchor_text, ctx in zr_urls:
         zr_id = _extract_zr_id(href)
         if not zr_id or zr_id in seen:
             continue
-        title = (anchor.get_text(strip=True) or anchor.get("aria-label", "")).strip()
-        if not title or len(title) < 5 or len(title) > 200:
-            continue
-        if any(skip in title.lower() for skip in ("view all", "unsubscribe", "manage", "preferences")):
+        title = anchor_text or _extract_title_near(ctx, fallback=f"ZipRecruiter job {zr_id}")
+        if _is_junk_title(title):
             continue
         seen.add(zr_id)
-        ctx = _surrounding_context(anchor)
         company = _guess_company(ctx, title)
         location = _guess_location(ctx)
         yield Job(
@@ -287,24 +284,21 @@ def parse_ziprecruiter(msg) -> Iterator[Job]:
 
 
 def parse_linkedin(msg) -> Iterator[Job]:
-    html = _email_body_html(msg)
-    if not html:
-        return
-    soup = BeautifulSoup(html, "lxml")
     subject = msg.get("Subject", "") or ""
+    urls_with_ctx = _collect_links(msg)
+    li_urls = [(href, text, ctx) for href, text, ctx in urls_with_ctx if "linkedin.com" in href.lower()]
+    log.debug("linkedin parser: %d total / %d linkedin urls in %r",
+              len(urls_with_ctx), len(li_urls), subject[:80])
+
     seen: set[str] = set()
-    for anchor in soup.find_all("a", href=True):
-        href = anchor["href"]
+    for href, anchor_text, ctx in li_urls:
         li_id = _extract_li_job_id(href)
         if not li_id or li_id in seen:
             continue
-        title = (anchor.get_text(strip=True) or anchor.get("aria-label", "")).strip()
-        if not title or len(title) < 5 or len(title) > 200:
-            continue
-        if any(skip in title.lower() for skip in ("view all", "unsubscribe", "see more")):
+        title = anchor_text or _extract_title_near(ctx, fallback=f"LinkedIn job {li_id}")
+        if _is_junk_title(title):
             continue
         seen.add(li_id)
-        ctx = _surrounding_context(anchor)
         company = _guess_company(ctx, title)
         location = _guess_location(ctx)
         canonical = f"https://www.linkedin.com/jobs/view/{li_id}/"
@@ -336,25 +330,44 @@ PARSERS = {
 
 
 def _extract_indeed_jk(href: str) -> str | None:
-    if "indeed.com" not in href:
+    """Find an Indeed job key in an href.
+
+    Handles direct URLs (?jk=abc), tracking-redirect URLs that URL-encode the
+    target (jk%3Dabc), and inline-text URL appearances.
+    """
+    if "indeed.com" not in href.lower():
         return None
+    # 1. Direct top-level query param.
     try:
         qs = parse_qs(urlparse(href).query)
         jk = qs.get("jk", [None])[0]
-        return jk
+        if jk:
+            return jk
     except Exception:
-        return None
+        pass
+    # 2. jk= anywhere in the string (inline appearance).
+    m = re.search(r"[?&]jk=([A-Za-z0-9_-]{8,})", href)
+    if m:
+        return m.group(1)
+    # 3. URL-encoded inner URL — common in mailing-list tracker wrappers.
+    m = re.search(r"jk%3D([A-Za-z0-9_-]{8,})", href)
+    if m:
+        return m.group(1)
+    return None
 
 
 _ZR_PATTERNS = (
-    re.compile(r"ziprecruiter\.com/jobs/[^/?#]+/([A-Za-z0-9_-]+)"),
-    re.compile(r"ziprecruiter\.com/c/[^/]+/Job/[^/?#]+-([A-Za-z0-9_-]+)"),
+    re.compile(r"ziprecruiter\.com/jobs/[^/?#&]+/([A-Za-z0-9_-]{8,})"),
+    re.compile(r"ziprecruiter\.com/c/[^/]+/Job/[^/?#&]+-([A-Za-z0-9_-]{8,})"),
     re.compile(r"[?&]lvk=([A-Za-z0-9_-]+)"),
+    # URL-encoded variants (tracking wrappers)
+    re.compile(r"ziprecruiter\.com%2Fjobs%2F[^%]+%2F([A-Za-z0-9_-]{8,})"),
+    re.compile(r"lvk%3D([A-Za-z0-9_-]+)"),
 )
 
 
 def _extract_zr_id(href: str) -> str | None:
-    if "ziprecruiter.com" not in href:
+    if "ziprecruiter" not in href.lower():
         return None
     for pat in _ZR_PATTERNS:
         m = pat.search(href)
@@ -364,12 +377,17 @@ def _extract_zr_id(href: str) -> str | None:
 
 
 def _extract_li_job_id(href: str) -> str | None:
-    if "linkedin.com" not in href:
+    if "linkedin.com" not in href.lower():
         return None
+    # Direct path.
     m = re.search(r"/jobs/view/(\d+)", href)
     if m:
         return m.group(1)
-    # Tracking links may have currentJobId=12345
+    # URL-encoded.
+    m = re.search(r"%2Fjobs%2Fview%2F(\d+)", href)
+    if m:
+        return m.group(1)
+    # currentJobId query param.
     try:
         qs = parse_qs(urlparse(href).query)
         jid = qs.get("currentJobId", [None])[0]
@@ -378,6 +396,78 @@ def _extract_li_job_id(href: str) -> str | None:
     except Exception:
         pass
     return None
+
+
+def _collect_links(msg) -> list[tuple[str, str, str]]:
+    """Collect (href, anchor_text, context) tuples from a message.
+
+    Scans both the HTML body (preferred — gives us anchor text + context)
+    and the plain-text body (fallback — emits URLs with empty anchor text).
+    """
+    out: list[tuple[str, str, str]] = []
+    html = _email_body_html(msg)
+    if html:
+        soup = BeautifulSoup(html, "lxml")
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            if not href or href.startswith(("mailto:", "tel:", "#")):
+                continue
+            anchor_text = (a.get_text(strip=True) or a.get("aria-label", "") or "").strip()
+            if len(anchor_text) > 200:
+                anchor_text = ""
+            ctx = _surrounding_context(a)
+            out.append((href, anchor_text, ctx))
+    text = _email_body_text(msg)
+    if text:
+        seen_hrefs = {h for h, _, _ in out}
+        for m in re.finditer(r"https?://[^\s<>\"'\)\]]+", text):
+            href = m.group(0).strip(".,;)")
+            if href in seen_hrefs:
+                continue
+            # Best-effort context: 200 chars around the URL in the text.
+            start = max(0, m.start() - 200)
+            end = min(len(text), m.end() + 200)
+            ctx = text[start:end]
+            out.append((href, "", ctx))
+            seen_hrefs.add(href)
+    return out
+
+
+_JUNK_TITLE_PHRASES = (
+    "view all",
+    "view jobs",
+    "view in browser",
+    "view this email",
+    "unsubscribe",
+    "manage preferences",
+    "manage subscriptions",
+    "manage your alerts",
+    "manage alerts",
+    "see all",
+    "see more",
+    "open in",
+    "click here",
+    "edit your",
+    "update your",
+)
+
+
+def _is_junk_title(title: str) -> bool:
+    if not title or len(title) < 5 or len(title) > 200:
+        return True
+    lo = title.lower()
+    return any(p in lo for p in _JUNK_TITLE_PHRASES)
+
+
+def _extract_title_near(ctx: str, fallback: str) -> str:
+    """Best-effort: pull the first plausible-looking job-title line from context."""
+    if not ctx:
+        return fallback
+    for line in ctx.split("\n"):
+        line = line.strip()
+        if 10 <= len(line) <= 120 and not line.startswith(("http", "View ", "Apply", "Click")):
+            return line
+    return fallback
 
 
 # ---------- context heuristics ----------
