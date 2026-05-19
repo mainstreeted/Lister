@@ -287,12 +287,36 @@ def test_email_digest_url_extractors():
 def test_email_digest_title_from_subject():
     from lister.discovery.email_digest import _title_from_subject
 
+    # Clean "Title @ Company" subjects → extract the title cleanly.
     assert _title_from_subject("Fwd: Customer Service Manager @ Clever Real Estate") == "Customer Service Manager"
     assert _title_from_subject("Re: Fwd: Underwriter II at Acme Insurance") == "Underwriter II"
     assert _title_from_subject("Fwd: Customer Service Representative opening at Afni") == "Customer Service Representative"
     assert _title_from_subject("Fwd: $34/hr Payroll Specialist job in Tallahassee") == "$34/hr Payroll Specialist"
-    assert _title_from_subject("Fwd: Ed, Catalis has an open position") != ""
-    assert _title_from_subject("Fwd: I'm interested in you for my B2B Sales Rep position at Slice").startswith("B2B Sales")
+
+    # Generic-marketing subjects → return empty so the caller mines the body.
+    assert _title_from_subject("Fwd: I think this job might be right for you!") == ""
+    assert _title_from_subject("Fwd: Ed, I think this job might be right for you!") == ""
+    assert _title_from_subject("Fwd: Ed, Catalis has an open position") == ""
+    assert _title_from_subject("Fwd: We think you'd be a great fit") == ""
+    assert _title_from_subject("Fwd: I'm interested in you for my B2B Sales Rep position at Slice") == ""
+
+
+def test_email_digest_extract_title_near_prefers_role_keywords():
+    """Body extraction picks role-keyword-rich lines over generic short lines."""
+    from lister.discovery.email_digest import _extract_title_near
+
+    ctx = (
+        "We think you'd love this:\n"
+        "Customer Service Manager\n"
+        "Acme Insurance\n"
+        "Tallahassee, FL\n"
+        "Apply now\n"
+    )
+    assert _extract_title_near(ctx, fallback="x") == "Customer Service Manager"
+
+    # When no role-keyword line exists, falls back to whatever it has.
+    ctx2 = "Open position\nSee details\nApply\n"
+    assert _extract_title_near(ctx2, fallback="fallback") == "fallback"
 
 
 def test_batch_response_handles_missing_job():

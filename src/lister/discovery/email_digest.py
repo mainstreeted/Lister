@@ -228,7 +228,7 @@ def parse_indeed(msg) -> Iterator[Job]:
         jk = _extract_indeed_jk(href)
         if not jk or jk in seen:
             continue
-        title = _pick_title(anchor_text, ctx, subject_title)
+        title = _pick_title(anchor_text, ctx, subject_title, subject)
         if _is_junk_title(title):
             continue
         seen.add(jk)
@@ -267,7 +267,7 @@ def parse_ziprecruiter(msg) -> Iterator[Job]:
         zr_id = _extract_zr_id(href)
         if not zr_id or zr_id in seen:
             continue
-        title = _pick_title(anchor_text, ctx, subject_title)
+        title = _pick_title(anchor_text, ctx, subject_title, subject)
         if _is_junk_title(title):
             continue
         seen.add(zr_id)
@@ -303,7 +303,7 @@ def parse_linkedin(msg) -> Iterator[Job]:
         li_id = _extract_li_job_id(href)
         if not li_id or li_id in seen:
             continue
-        title = _pick_title(anchor_text, ctx, subject_title)
+        title = _pick_title(anchor_text, ctx, subject_title, subject)
         if _is_junk_title(title):
             continue
         seen.add(li_id)
@@ -398,10 +398,9 @@ def _extract_zr_id(href: str) -> str | None:
 def _title_from_subject(subject: str) -> str:
     """Best-effort job-title extraction from a forwarded email subject.
 
-    Indeed and ZipRecruiter alert emails almost always put the job title and
-    company directly in the subject (e.g. "Customer Service Manager @ Acme"),
-    so the subject is usually a better signal than anything we can pull from
-    tracker URLs whose payloads are opaque.
+    Returns "" when the subject is generic marketing language ("I think this
+    job might be right for you", "great fit", etc.) so the caller knows to
+    rely on body extraction instead.
     """
     s = subject or ""
     # Strip Fwd:/Re: prefixes (possibly nested).
@@ -413,6 +412,12 @@ def _title_from_subject(subject: str) -> str:
     s = s.strip()
     # Strip name-personalization the sender prepended ("Ed, ...", "Hi Ed, ...").
     s = re.sub(r"^(Hi\s+)?Ed,?\s+", "", s, flags=re.IGNORECASE)
+
+    # Generic-marketing detector: no usable title in this subject.
+    lo = s.lower()
+    if any(p in lo for p in _GENERIC_SUBJECT_PHRASES):
+        return ""
+
     # "I'm interested in you for (my) X position at Company" — strip the lead-in.
     s = re.sub(
         r"^I'?m\s+interested\s+in\s+you\s+for\s+(my\s+)?",
@@ -436,7 +441,7 @@ def _title_from_subject(subject: str) -> str:
             head = head.strip()
             if 4 < len(head) < 120:
                 return head
-    return s[:120].strip() or "Forwarded job"
+    return s[:120].strip() or ""
 
 
 def _extract_li_job_id(href: str) -> str | None:
@@ -501,6 +506,8 @@ _JUNK_TITLE_PHRASES = (
     "view jobs",
     "view in browser",
     "view this email",
+    "view job",
+    "view the job",
     "unsubscribe",
     "manage preferences",
     "manage subscriptions",
@@ -508,10 +515,89 @@ _JUNK_TITLE_PHRASES = (
     "manage alerts",
     "see all",
     "see more",
+    "see jobs",
     "open in",
     "click here",
+    "click to",
+    "apply now",
+    "apply here",
     "edit your",
     "update your",
+    "right for you",
+    "might be right",
+    "we think",
+    "great fit",
+    "great match",
+    "perfect for",
+    "interested in you",
+)
+
+
+_GENERIC_SUBJECT_PHRASES = (
+    "right for you",
+    "right for ed",
+    "might be",
+    "great fit",
+    "great match",
+    "we think",
+    "perfect for",
+    "perfect match",
+    "interested in you",
+    "interested in your",
+    "open position",
+    "open positions",
+    "has an open",
+    "new job",
+    "new jobs",
+    "matched you",
+    "matches your",
+    "recommended for",
+    "you might like",
+    "you may like",
+)
+
+
+# Role keywords used to score candidate title lines extracted from email body
+# context. A line containing "Manager" or "Underwriter" is much more likely to
+# be a job title than a generic line, so we prefer those when picking.
+_TITLE_ROLE_KEYWORDS = (
+    "manager",
+    "specialist",
+    "engineer",
+    "coordinator",
+    "analyst",
+    "director",
+    "lead",
+    "supervisor",
+    "representative",
+    "agent",
+    "consultant",
+    "associate",
+    "executive",
+    "administrator",
+    "underwriter",
+    "adjuster",
+    "officer",
+    "writer",
+    "designer",
+    "developer",
+    "architect",
+    "owner",
+    "trainer",
+    "assistant",
+    "advisor",
+    "operator",
+    "technician",
+    "head",
+    "vp",
+    "partner",
+    "intern",
+    "fellow",
+    "clerk",
+    "processor",
+    "service",
+    "support",
+    "care",
 )
 
 
@@ -522,26 +608,69 @@ def _is_junk_title(title: str) -> bool:
     return any(p in lo for p in _JUNK_TITLE_PHRASES)
 
 
-def _pick_title(anchor_text: str, ctx: str, subject_title: str) -> str:
-    """Choose the best available title: anchor text, then context, then subject."""
+def _pick_title(anchor_text: str, ctx: str, subject_title: str, raw_subject: str = "") -> str:
+    """Choose the best available title.
+
+    Order of preference:
+      1. anchor text (when it's not a junk label like "Apply Now")
+      2. role-keyword-rich line from surrounding context
+      3. cleaned subject title (empty when subject is generic marketing)
+      4. fallback that incorporates the raw subject so the job is still
+         identifiable downstream
+    """
     cand = (anchor_text or "").strip()
     if cand and not _is_junk_title(cand):
         return cand
     cand = _extract_title_near(ctx, fallback="").strip()
     if cand and not _is_junk_title(cand):
         return cand
-    return subject_title
+    if subject_title and not _is_junk_title(subject_title):
+        return subject_title
+    # Last resort: include the raw subject so the entry isn't anonymous.
+    raw = (raw_subject or "").strip()
+    raw = re.sub(r"^\s*(Fwd|Fw|Re):\s*", "", raw, flags=re.IGNORECASE).strip()
+    if raw:
+        return f"Job alert: {raw[:100]}"
+    return "Forwarded job alert"
 
 
 def _extract_title_near(ctx: str, fallback: str) -> str:
-    """Best-effort: pull the first plausible-looking job-title line from context."""
+    """Score lines in ``ctx`` and return the most title-shaped one.
+
+    Lines containing a job-role keyword (Manager, Underwriter, Specialist…)
+    score higher than generic short lines, so for an Indeed email layout
+    like ``"We think you'd love this:\\nCustomer Service Manager\\nAcme Inc"``
+    we pick the title line instead of "We think you'd love this:".
+    """
     if not ctx:
         return fallback
-    for line in ctx.split("\n"):
-        line = line.strip()
-        if 10 <= len(line) <= 120 and not line.startswith(("http", "View ", "Apply", "Click")):
-            return line
-    return fallback
+    candidates: list[tuple[int, str]] = []
+    # Try both newline-separated and run-of-spaces-separated splits, since
+    # forwarded HTML emails get flattened differently by different clients.
+    pieces: list[str] = []
+    for chunk in ctx.split("\n"):
+        pieces.append(chunk)
+        pieces.extend(re.split(r"\s{2,}|·|—|\|", chunk))
+    for raw in pieces:
+        line = raw.strip(" \t\r\n·—-|")
+        if not (10 <= len(line) <= 120):
+            continue
+        lo = line.lower()
+        if lo.startswith(("http", "view ", "apply", "click", "see ", "open ", "we think", "hi ed", "ed,")):
+            continue
+        if _is_junk_title(line):
+            continue
+        # Score by presence of role keywords.
+        kw_hits = sum(1 for kw in _TITLE_ROLE_KEYWORDS if kw in lo)
+        # Mild bonus for title-case lines (most job titles are title-case).
+        is_titlecase = sum(1 for w in line.split() if w[:1].isupper()) >= max(2, len(line.split()) - 1)
+        score = kw_hits * 3 + (1 if is_titlecase else 0)
+        candidates.append((score, line))
+    if not candidates:
+        return fallback
+    candidates.sort(key=lambda x: -x[0])
+    best_score, best_line = candidates[0]
+    return best_line if best_score > 0 else (candidates[0][1] if candidates else fallback)
 
 
 # ---------- context heuristics ----------
