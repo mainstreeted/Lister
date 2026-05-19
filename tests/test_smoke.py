@@ -257,8 +257,13 @@ def test_email_digest_url_extractors():
         _extract_zr_id,
     )
 
-    assert _extract_indeed_jk("https://www.indeed.com/rc/clk?jk=abc123") == "abc123"
+    assert _extract_indeed_jk("https://www.indeed.com/rc/clk?jk=abc12345") == "abc12345"
     assert _extract_indeed_jk("https://example.com/foo") is None
+
+    # Indeed CTS tracker — opaque blob fallback.
+    cts = "https://cts.indeed.com/v3/H4sIAAAAAAAA_42RzW6bQBRG3wWprELMgPmxJVS5tkAm"
+    jk = _extract_indeed_jk(cts)
+    assert jk is not None and jk.startswith("cts_")
 
     assert _extract_li_job_id("https://www.linkedin.com/jobs/view/12345/") == "12345"
     assert _extract_li_job_id("https://www.linkedin.com/comm/jobs/view/67890/?x=y") == "67890"
@@ -268,6 +273,26 @@ def test_email_digest_url_extractors():
         _extract_zr_id("https://www.ziprecruiter.com/jobs/foo-bar/Abc123XyZ")
         == "Abc123XyZ"
     )
+    # ZipRecruiter email tracker tokens.
+    assert (
+        _extract_zr_id("https://www.ziprecruiter.com/km/AAHq2ryj6HJ-cmDasT4yKkIjaXctZZWf")
+        == "AAHq2ryj6HJ-cmDasT4yKkIjaXctZZWf"
+    )
+    assert (
+        _extract_zr_id("https://www.ziprecruiter.com/ekm/AAEiGy6UNl_DWuknJ0YuPS7YjQRa71Qb")
+        == "AAEiGy6UNl_DWuknJ0YuPS7YjQRa71Qb"
+    )
+
+
+def test_email_digest_title_from_subject():
+    from lister.discovery.email_digest import _title_from_subject
+
+    assert _title_from_subject("Fwd: Customer Service Manager @ Clever Real Estate") == "Customer Service Manager"
+    assert _title_from_subject("Re: Fwd: Underwriter II at Acme Insurance") == "Underwriter II"
+    assert _title_from_subject("Fwd: Customer Service Representative opening at Afni") == "Customer Service Representative"
+    assert _title_from_subject("Fwd: $34/hr Payroll Specialist job in Tallahassee") == "$34/hr Payroll Specialist"
+    assert _title_from_subject("Fwd: Ed, Catalis has an open position") != ""
+    assert _title_from_subject("Fwd: I'm interested in you for my B2B Sales Rep position at Slice").startswith("B2B Sales")
 
 
 def test_batch_response_handles_missing_job():

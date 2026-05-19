@@ -45,6 +45,11 @@ DEFAULT_SENDERS = (
     "jobalerts-noreply@linkedin.com",
 )
 
+# Cap jobs emitted per email. ZipRecruiter digest emails can have 50+ tracking
+# URLs to the same handful of jobs; capping prevents one noisy email from
+# flooding the shortlist with near-duplicates.
+MAX_URLS_PER_EMAIL = 20
+
 
 class EmailDigestConnector(Connector):
     platform_name = "email_digest"
@@ -217,12 +222,13 @@ def parse_indeed(msg) -> Iterator[Job]:
     for href, _, ctx in indeed_urls[:5]:
         log.debug("  indeed url sample: %s", href[:200])
 
+    subject_title = _title_from_subject(subject)
     seen: set[str] = set()
-    for href, anchor_text, ctx in indeed_urls:
+    for href, anchor_text, ctx in indeed_urls[:MAX_URLS_PER_EMAIL]:
         jk = _extract_indeed_jk(href)
         if not jk or jk in seen:
             continue
-        title = anchor_text or _extract_title_near(ctx, fallback=f"Indeed job {jk}")
+        title = _pick_title(anchor_text, ctx, subject_title)
         if _is_junk_title(title):
             continue
         seen.add(jk)
@@ -255,12 +261,13 @@ def parse_ziprecruiter(msg) -> Iterator[Job]:
     for href, _, ctx in zr_urls[:5]:
         log.debug("  zr url sample: %s", href[:200])
 
+    subject_title = _title_from_subject(subject)
     seen: set[str] = set()
-    for href, anchor_text, ctx in zr_urls:
+    for href, anchor_text, ctx in zr_urls[:MAX_URLS_PER_EMAIL]:
         zr_id = _extract_zr_id(href)
         if not zr_id or zr_id in seen:
             continue
-        title = anchor_text or _extract_title_near(ctx, fallback=f"ZipRecruiter job {zr_id}")
+        title = _pick_title(anchor_text, ctx, subject_title)
         if _is_junk_title(title):
             continue
         seen.add(zr_id)
@@ -290,12 +297,13 @@ def parse_linkedin(msg) -> Iterator[Job]:
     log.debug("linkedin parser: %d total / %d linkedin urls in %r",
               len(urls_with_ctx), len(li_urls), subject[:80])
 
+    subject_title = _title_from_subject(subject)
     seen: set[str] = set()
-    for href, anchor_text, ctx in li_urls:
+    for href, anchor_text, ctx in li_urls[:MAX_URLS_PER_EMAIL]:
         li_id = _extract_li_job_id(href)
         if not li_id or li_id in seen:
             continue
-        title = anchor_text or _extract_title_near(ctx, fallback=f"LinkedIn job {li_id}")
+        title = _pick_title(anchor_text, ctx, subject_title)
         if _is_junk_title(title):
             continue
         seen.add(li_id)
@@ -330,10 +338,12 @@ PARSERS = {
 
 
 def _extract_indeed_jk(href: str) -> str | None:
-    """Find an Indeed job key in an href.
+    """Find an Indeed job identifier in an href.
 
     Handles direct URLs (?jk=abc), tracking-redirect URLs that URL-encode the
-    target (jk%3Dabc), and inline-text URL appearances.
+    target (jk%3Dabc), and Indeed's CTS tracker (cts.indeed.com/v3/<blob>)
+    where the job key is encrypted inside the blob — for those we fall back
+    to using a hash of the blob as a stable per-link ID.
     """
     if "indeed.com" not in href.lower():
         return None
@@ -353,6 +363,10 @@ def _extract_indeed_jk(href: str) -> str | None:
     m = re.search(r"jk%3D([A-Za-z0-9_-]{8,})", href)
     if m:
         return m.group(1)
+    # 4. Indeed CTS tracker — opaque blob, treat the blob as the ID.
+    m = re.search(r"cts\.indeed\.com/v\d+/([A-Za-z0-9_-]{16,})", href)
+    if m:
+        return "cts_" + m.group(1)[:32]
     return None
 
 
@@ -360,9 +374,12 @@ _ZR_PATTERNS = (
     re.compile(r"ziprecruiter\.com/jobs/[^/?#&]+/([A-Za-z0-9_-]{8,})"),
     re.compile(r"ziprecruiter\.com/c/[^/]+/Job/[^/?#&]+-([A-Za-z0-9_-]{8,})"),
     re.compile(r"[?&]lvk=([A-Za-z0-9_-]+)"),
-    # URL-encoded variants (tracking wrappers)
     re.compile(r"ziprecruiter\.com%2Fjobs%2F[^%]+%2F([A-Za-z0-9_-]{8,})"),
     re.compile(r"lvk%3D([A-Za-z0-9_-]+)"),
+    # ZipRecruiter email tracker: /km/<token> or /ekm/<token>. Token is per-link
+    # so the same actual job in different emails will appear as separate Jobs;
+    # accepted tradeoff to surface inventory.
+    re.compile(r"ziprecruiter\.com/(?:e)?km/([A-Za-z0-9_-]{16,})"),
 )
 
 
@@ -372,8 +389,54 @@ def _extract_zr_id(href: str) -> str | None:
     for pat in _ZR_PATTERNS:
         m = pat.search(href)
         if m:
-            return m.group(1)
+            ident = m.group(1)
+            # Cap long tracking tokens so DB ids stay reasonable.
+            return ident[:48]
     return None
+
+
+def _title_from_subject(subject: str) -> str:
+    """Best-effort job-title extraction from a forwarded email subject.
+
+    Indeed and ZipRecruiter alert emails almost always put the job title and
+    company directly in the subject (e.g. "Customer Service Manager @ Acme"),
+    so the subject is usually a better signal than anything we can pull from
+    tracker URLs whose payloads are opaque.
+    """
+    s = subject or ""
+    # Strip Fwd:/Re: prefixes (possibly nested).
+    for _ in range(3):
+        new = re.sub(r"^\s*(Fwd|Fw|Re):\s*", "", s, flags=re.IGNORECASE)
+        if new == s:
+            break
+        s = new
+    s = s.strip()
+    # Strip name-personalization the sender prepended ("Ed, ...", "Hi Ed, ...").
+    s = re.sub(r"^(Hi\s+)?Ed,?\s+", "", s, flags=re.IGNORECASE)
+    # "I'm interested in you for (my) X position at Company" — strip the lead-in.
+    s = re.sub(
+        r"^I'?m\s+interested\s+in\s+you\s+for\s+(my\s+)?",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
+    # Strip trailing context phrases first so the " at " / " @ " splits below
+    # don't end up keeping the connecting word (e.g. "Rep opening at X" → "Rep").
+    s = re.sub(
+        r"\s+(opening|position|job|role|posting)\s+(at|in)\s+.+$",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = re.sub(r"\s+(opening|position)\s*$", "", s, flags=re.IGNORECASE)
+    # "X @ Company" or "X at Company" — keep just X.
+    for sep in (" @ ", " at "):
+        if sep in s:
+            head, _, _ = s.partition(sep)
+            head = head.strip()
+            if 4 < len(head) < 120:
+                return head
+    return s[:120].strip() or "Forwarded job"
 
 
 def _extract_li_job_id(href: str) -> str | None:
@@ -457,6 +520,17 @@ def _is_junk_title(title: str) -> bool:
         return True
     lo = title.lower()
     return any(p in lo for p in _JUNK_TITLE_PHRASES)
+
+
+def _pick_title(anchor_text: str, ctx: str, subject_title: str) -> str:
+    """Choose the best available title: anchor text, then context, then subject."""
+    cand = (anchor_text or "").strip()
+    if cand and not _is_junk_title(cand):
+        return cand
+    cand = _extract_title_near(ctx, fallback="").strip()
+    if cand and not _is_junk_title(cand):
+        return cand
+    return subject_title
 
 
 def _extract_title_near(ctx: str, fallback: str) -> str:
