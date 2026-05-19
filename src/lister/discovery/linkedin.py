@@ -72,6 +72,7 @@ class LinkedInConnector(Connector):
                 try:
                     job_ids = self._search(page, query)
                     log.info("linkedin: %r → %d job ids", query, len(job_ids))
+                    yielded = 0
                 except Exception as e:
                     log.error(
                         "linkedin: search failed for %r: %s. "
@@ -88,11 +89,33 @@ class LinkedInConnector(Connector):
                 for jid in job_ids[: self.jobs_per_query]:
                     try:
                         job = self._fetch_detail(page, jid)
-                        if job and self._passes_coarse_filter(job, criteria):
+                        if not job:
+                            log.debug(
+                                "linkedin: jid=%s dropped — _fetch_detail returned None "
+                                "(likely no JSON-LD on detail page)",
+                                jid,
+                            )
+                        elif not self._passes_coarse_filter(job, criteria):
+                            log.debug(
+                                "linkedin: jid=%s filtered out  title=%r  location=%r  remote=%s",
+                                jid,
+                                job.title,
+                                job.location,
+                                job.remote,
+                            )
+                        else:
+                            yielded += 1
                             yield job
                     except Exception as e:
                         log.warning("linkedin: detail fetch failed for %s: %s", jid, e)
                     human_pause()
+
+                log.info(
+                    "linkedin: query %r → %d of %d job ids passed filters",
+                    query,
+                    yielded,
+                    len(job_ids),
+                )
 
                 try:
                     page.close()
@@ -217,11 +240,27 @@ class LinkedInConnector(Connector):
     def _fetch_detail(self, page, job_id: str) -> Job | None:
         url = DETAIL_URL_TMPL.format(job_id=job_id)
         goto_with_retry(page, url)
+
+        # JSON-LD is sometimes injected slightly after domcontentloaded; wait
+        # briefly for the script tag to appear before scraping.
+        try:
+            page.wait_for_selector(
+                'script[type="application/ld+json"]', timeout=5000
+            )
+        except Exception:
+            pass
         human_pause(0.4, 1.0)
 
         html = page.content()
         data = _parse_jsonld(html)
         if not data:
+            has_ld_marker = "application/ld+json" in html
+            log.debug(
+                "linkedin: jid=%s no JobPosting found  html=%d bytes  ld+json_in_page=%s",
+                job_id,
+                len(html),
+                has_ld_marker,
+            )
             return None
 
         title = (data.get("title") or "").strip()
