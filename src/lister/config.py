@@ -51,6 +51,17 @@ class PlatformConfig(BaseModel):
     search_queries: list[str] = Field(default_factory=list)
 
 
+class EmailDigestConfig(BaseModel):
+    """Discover jobs by reading job-alert emails out of Gmail via IMAP."""
+    enabled: bool = False
+    # Sender email addresses to scan. If empty, sane defaults are used.
+    senders: list[str] = Field(default_factory=list)
+    # Only consider emails newer than this many days.
+    max_age_days: int = 7
+    # Per-run cap on total jobs surfaced from email digests, to keep runtime sane.
+    max_jobs: int = 200
+
+
 class PlatformsConfig(BaseModel):
     greenhouse: PlatformConfig = Field(default_factory=PlatformConfig)
     lever: PlatformConfig = Field(default_factory=PlatformConfig)
@@ -59,6 +70,7 @@ class PlatformsConfig(BaseModel):
     linkedin: PlatformConfig = Field(default_factory=PlatformConfig)
     indeed: PlatformConfig = Field(default_factory=PlatformConfig)
     ziprecruiter: PlatformConfig = Field(default_factory=PlatformConfig)
+    email_digest: EmailDigestConfig = Field(default_factory=EmailDigestConfig)
 
 
 class DailyConfig(BaseModel):

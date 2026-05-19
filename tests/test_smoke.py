@@ -181,6 +181,95 @@ def test_linkedin_jsonld_extraction():
     assert _parse_location(None) is None
 
 
+def test_email_digest_indeed_parser_extracts_jobs():
+    """Indeed digest emails embed jk= job-keys in tracking links."""
+    import email.message
+    from lister.discovery.email_digest import parse_indeed
+
+    html = """
+    <html><body>
+      <table>
+        <tr>
+          <td>
+            <a href="https://www.indeed.com/rc/clk?jk=abc123def&from=alert">
+              Senior Customer Service Manager
+            </a>
+            <br/>Acme Insurance · Tallahassee, FL
+          </td>
+        </tr>
+        <tr>
+          <td>
+            <a href="https://www.indeed.com/viewjob?jk=zzz999">
+              Underwriter, Personal Lines
+            </a>
+            <br/>BigCo · Remote
+          </td>
+        </tr>
+        <tr><td><a href="https://www.indeed.com/manage/alerts">unsubscribe</a></td></tr>
+      </table>
+    </body></html>
+    """
+    msg = email.message.EmailMessage()
+    msg["Subject"] = "5 new jobs for you"
+    msg["From"] = "alert@indeed.com"
+    msg.set_content(html, subtype="html")
+
+    jobs = list(parse_indeed(msg))
+    assert len(jobs) == 2
+    assert jobs[0].platform_id == "abc123def"
+    assert jobs[0].id == "indeed:email:abc123def"
+    assert "Customer Service Manager" in jobs[0].title
+    assert jobs[1].platform_id == "zzz999"
+    assert jobs[1].remote is True
+
+
+def test_email_digest_linkedin_parser_extracts_jobs():
+    import email.message
+    from lister.discovery.email_digest import parse_linkedin
+
+    html = """
+    <html><body>
+      <a href="https://www.linkedin.com/comm/jobs/view/4123456789/?some=tracking">
+        Customer Success Manager
+      </a>
+      <span>Stripe · Remote · Posted 2 days ago</span>
+      <a href="https://www.linkedin.com/jobs/view/9876543210/">
+        Insurance Underwriter
+      </a>
+      <span>State Farm · Tallahassee, FL</span>
+    </body></html>
+    """
+    msg = email.message.EmailMessage()
+    msg["Subject"] = "Jobs for you"
+    msg["From"] = "jobs-noreply@linkedin.com"
+    msg.set_content(html, subtype="html")
+
+    jobs = list(parse_linkedin(msg))
+    assert len(jobs) == 2
+    assert jobs[0].platform_id == "4123456789"
+    assert jobs[1].platform_id == "9876543210"
+
+
+def test_email_digest_url_extractors():
+    from lister.discovery.email_digest import (
+        _extract_indeed_jk,
+        _extract_li_job_id,
+        _extract_zr_id,
+    )
+
+    assert _extract_indeed_jk("https://www.indeed.com/rc/clk?jk=abc123") == "abc123"
+    assert _extract_indeed_jk("https://example.com/foo") is None
+
+    assert _extract_li_job_id("https://www.linkedin.com/jobs/view/12345/") == "12345"
+    assert _extract_li_job_id("https://www.linkedin.com/comm/jobs/view/67890/?x=y") == "67890"
+    assert _extract_li_job_id("https://www.linkedin.com/?currentJobId=11111") == "11111"
+
+    assert (
+        _extract_zr_id("https://www.ziprecruiter.com/jobs/foo-bar/Abc123XyZ")
+        == "Abc123XyZ"
+    )
+
+
 def test_batch_response_handles_missing_job():
     """If the model drops a job from its response, we synthesize a placeholder."""
     from lister.ranker import _parse_batch_response

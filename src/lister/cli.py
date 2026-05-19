@@ -12,7 +12,7 @@ from rich.table import Table
 
 from . import db
 from .config import load_criteria, load_resume
-from .discovery import GreenhouseConnector, LinkedInConnector
+from .discovery import EmailDigestConnector, GreenhouseConnector, LinkedInConnector
 from .ranker import ApiRanker, ClaudeCliRanker, MockRanker, summarize_resume
 
 load_dotenv()
@@ -97,7 +97,9 @@ def discover(
         connectors.append(GreenhouseConnector())
     if criteria.platforms.linkedin.enabled:
         connectors.append(LinkedInConnector())
-    # TODO: indeed, ziprecruiter, lever, ashby, workday
+    if criteria.platforms.email_digest.enabled:
+        connectors.append(EmailDigestConnector())
+    # TODO: indeed, ziprecruiter (direct), lever, ashby, workday
 
     if not connectors:
         console.print("[yellow]No platforms enabled in criteria.yaml.[/]")
