@@ -56,6 +56,11 @@ class EmailDigestConfig(BaseModel):
     enabled: bool = False
     # Sender email addresses to scan. If empty, sane defaults are used.
     senders: list[str] = Field(default_factory=list)
+    # Additional addresses that contain *forwarded* job-alert emails (e.g.,
+    # your own address, if you forward alerts from a main inbox to a burner).
+    # All parsers run against every fetched email regardless of source, so
+    # forwarded mail works the same as direct mail.
+    forwarded_from: list[str] = Field(default_factory=list)
     # Only consider emails newer than this many days.
     max_age_days: int = 7
     # Per-run cap on total jobs surfaced from email digests, to keep runtime sane.

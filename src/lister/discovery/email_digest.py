@@ -63,18 +63,17 @@ class EmailDigestConnector(Connector):
             )
             return
 
-        senders = list(cfg.senders) if cfg.senders else list(DEFAULT_SENDERS)
+        direct = list(cfg.senders) if cfg.senders else list(DEFAULT_SENDERS)
+        forwarded = list(cfg.forwarded_from or [])
+        # Preserve order, drop duplicates if a sender appears in both lists.
+        senders = list(dict.fromkeys(direct + forwarded))
         since = datetime.utcnow() - timedelta(days=cfg.max_age_days)
 
         yielded = 0
         try:
             with _imap_connection(user, password) as conn:
                 for sender in senders:
-                    kind = _sender_kind(sender)
-                    parser = PARSERS.get(kind)
-                    if parser is None:
-                        log.warning("email_digest: no parser for sender %r — skipping", sender)
-                        continue
+                    kind = _sender_kind(sender) or "forwarded"
                     msgs = list(_fetch_recent_from(conn, sender, since))
                     log.info(
                         "email_digest: %s (%s) → %d messages since %s",
@@ -84,18 +83,29 @@ class EmailDigestConnector(Connector):
                         since.date().isoformat(),
                     )
                     for msg in msgs:
-                        try:
-                            for job in parser(msg):
-                                if yielded >= cfg.max_jobs:
-                                    log.info(
-                                        "email_digest: max_jobs cap (%d) hit — stopping",
-                                        cfg.max_jobs,
-                                    )
-                                    return
-                                yielded += 1
-                                yield job
-                        except Exception as e:
-                            log.warning("email_digest: %s message parse failed: %s", kind, e)
+                        # Run every parser against every email. Each parser
+                        # only yields when its platform-specific URL pattern
+                        # matches, so the right one fires regardless of who
+                        # sent the email — works for both direct alerts and
+                        # forwarded mail from a personal inbox.
+                        for parser_name, parser_fn in PARSERS.items():
+                            try:
+                                for job in parser_fn(msg):
+                                    if yielded >= cfg.max_jobs:
+                                        log.info(
+                                            "email_digest: max_jobs cap (%d) hit — stopping",
+                                            cfg.max_jobs,
+                                        )
+                                        return
+                                    yielded += 1
+                                    yield job
+                            except Exception as e:
+                                log.warning(
+                                    "email_digest: %s parser failed on %s msg: %s",
+                                    parser_name,
+                                    kind,
+                                    e,
+                                )
         except imaplib.IMAP4.error as e:
             log.error(
                 "email_digest: IMAP login/select failed: %s. "
