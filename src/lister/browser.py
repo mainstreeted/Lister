@@ -167,3 +167,76 @@ def goto_with_retry(page: Page, url: str, max_attempts: int = 3, timeout_ms: int
             log.warning("nav attempt %d failed for %s: %s", attempt + 1, url, e)
             time.sleep(2**attempt)
     raise RuntimeError(f"failed to navigate to {url}: {last_err}")
+
+
+# ---------- cookie import ----------
+
+_SAME_SITE_MAP = {
+    "lax": "Lax",
+    "strict": "Strict",
+    "none": "None",
+    "no_restriction": "None",
+    "unspecified": "Lax",
+}
+
+
+def _convert_cookie_list(cookies: list) -> list[dict]:
+    """Convert a Cookie-Editor-style cookie array to Playwright cookie dicts."""
+    out: list[dict] = []
+    for c in cookies:
+        if not isinstance(c, dict):
+            continue
+        name = c.get("name")
+        domain = c.get("domain")
+        if not name or not domain:
+            continue
+        same_site_raw = str(c.get("sameSite", "lax")).lower()
+        expires = c.get("expirationDate", c.get("expires", -1))
+        try:
+            expires = float(expires)
+        except (TypeError, ValueError):
+            expires = -1
+        out.append(
+            {
+                "name": name,
+                "value": c.get("value", ""),
+                "domain": domain,
+                "path": c.get("path", "/"),
+                "expires": expires,
+                "httpOnly": bool(c.get("httpOnly", False)),
+                "secure": bool(c.get("secure", False)),
+                "sameSite": _SAME_SITE_MAP.get(same_site_raw, "Lax"),
+            }
+        )
+    return out
+
+
+def import_cookies_file(platform: str, source_path: Path) -> int:
+    """Convert an exported cookie file into a platform's Playwright storage_state.
+
+    Accepts either:
+      - a Cookie-Editor style export (a JSON array of cookie objects), or
+      - an already-Playwright storage_state object ({"cookies": [...], ...}).
+
+    Writes ``.browser-profiles/<platform>-storage.json`` (the same file the
+    headless discovery/apply runs load) and returns the number of cookies.
+    """
+    import json
+
+    raw = json.loads(source_path.read_text())
+    if isinstance(raw, dict) and "cookies" in raw:
+        storage = {"cookies": raw["cookies"], "origins": raw.get("origins", [])}
+    elif isinstance(raw, list):
+        storage = {"cookies": _convert_cookie_list(raw), "origins": []}
+    else:
+        raise ValueError(
+            "Unrecognized cookie file format — expected a JSON array of cookies "
+            "(Cookie-Editor export) or a Playwright storage_state object."
+        )
+    if not storage["cookies"]:
+        raise ValueError("No usable cookies found in the file.")
+
+    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    out = PROFILES_DIR / f"{platform}-storage.json"
+    out.write_text(json.dumps(storage, indent=2))
+    return len(storage["cookies"])

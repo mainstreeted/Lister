@@ -449,5 +449,60 @@ def _color_for(status: ApplicationStatus) -> str:
     }.get(status, "white")
 
 
+@app.command(name="import-cookies")
+def import_cookies(
+    platform: str = typer.Argument(
+        ..., help="Platform the cookies belong to: linkedin | indeed | ziprecruiter"
+    ),
+    path: Path = typer.Argument(..., help="Path to the exported cookie JSON file."),
+    keep_source: bool = typer.Option(
+        False,
+        "--keep-source",
+        help="Keep the source cookie file after import. By default it's deleted "
+        "(it contains live session tokens).",
+    ),
+) -> None:
+    """Import browser cookies exported from a normal Chrome session.
+
+    Use this when a platform's login page blocks automated browsers with a
+    CAPTCHA / 'I am human' check. Log in normally in your everyday Chrome
+    (where you pass the CAPTCHA as a human), export the site's cookies with a
+    Cookie-Editor browser extension, and import them here. Lister's automation
+    then reuses that authenticated session and never touches a login page.
+    """
+    _setup_logging(False)
+    if not path.exists():
+        console.print(f"[red]File not found: {path}[/]")
+        raise typer.Exit(1)
+
+    from .browser import PROFILES_DIR, import_cookies_file
+
+    try:
+        n = import_cookies_file(platform.lower(), path)
+    except Exception as e:
+        console.print(f"[red]Import failed: {e}[/]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"[green]✓ Imported {n} cookies for {platform.lower()}.[/] "
+        f"Session saved to {PROFILES_DIR}/{platform.lower()}-storage.json"
+    )
+    if not keep_source:
+        try:
+            path.unlink()
+            console.print(
+                f"[dim]Deleted {path} (it held live session tokens). "
+                "Pass --keep-source to retain it next time.[/]"
+            )
+        except Exception as e:
+            console.print(
+                f"[yellow]Imported OK, but couldn't delete {path}: {e}. "
+                "Delete it yourself — it contains session tokens.[/]"
+            )
+    console.print(
+        "[cyan]Next: run `lister apply --limit 3` (dry run) to test the session.[/]"
+    )
+
+
 if __name__ == "__main__":
     app()

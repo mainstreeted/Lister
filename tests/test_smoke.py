@@ -301,7 +301,53 @@ def test_email_digest_title_from_subject():
     assert _title_from_subject("Fwd: I'm interested in you for my B2B Sales Rep position at Slice") == ""
 
 
-def test_email_digest_extract_title_near_prefers_role_keywords():
+def test_cookie_editor_conversion():
+    """Cookie-Editor export array converts to Playwright cookie dicts."""
+    from lister.browser import _convert_cookie_list
+
+    raw = [
+        {
+            "name": "session",
+            "value": "abc123",
+            "domain": ".ziprecruiter.com",
+            "path": "/",
+            "secure": True,
+            "httpOnly": True,
+            "sameSite": "no_restriction",
+            "expirationDate": 1799999999.5,
+        },
+        {
+            "name": "csrf",
+            "value": "xyz",
+            "domain": "www.ziprecruiter.com",
+            "sameSite": "lax",
+        },
+        {"junk": "no name or domain"},  # dropped
+    ]
+    out = _convert_cookie_list(raw)
+    assert len(out) == 2
+    assert out[0]["name"] == "session"
+    assert out[0]["sameSite"] == "None"  # no_restriction -> None
+    assert out[0]["expires"] == 1799999999.5
+    assert out[1]["sameSite"] == "Lax"
+    assert out[1]["path"] == "/"  # default
+    assert out[1]["expires"] == -1  # session cookie default
+
+
+def test_cookie_import_writes_storage_state(tmp_path, monkeypatch):
+    import json as _json
+    from lister import browser as _browser
+
+    monkeypatch.setattr(_browser, "PROFILES_DIR", tmp_path)
+    src = tmp_path / "zr-cookies.json"
+    src.write_text(_json.dumps([
+        {"name": "s", "value": "v", "domain": ".ziprecruiter.com", "path": "/"},
+    ]))
+    n = _browser.import_cookies_file("ziprecruiter", src)
+    assert n == 1
+    written = _json.loads((tmp_path / "ziprecruiter-storage.json").read_text())
+    assert written["cookies"][0]["name"] == "s"
+    assert "origins" in written
     """Body extraction picks role-keyword-rich lines over generic short lines."""
     from lister.discovery.email_digest import _extract_title_near
 
