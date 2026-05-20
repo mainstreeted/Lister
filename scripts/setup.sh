@@ -72,12 +72,13 @@ pip install --quiet -e ".[dev]"
 # Make sure config dirs exist (they're gitignored)
 mkdir -p config/resumes data
 
-# Playwright browser binary (~170MB; idempotent — fast if already present).
-say "Installing Playwright Chromium browser (~170MB; one-time)"
+# Playwright/patchright browser. We drive the system Google Chrome
+# (channel="chrome"), so no separate chromium download is strictly needed —
+# but install it as a fallback. Idempotent.
+say "Ensuring a browser binary is available for automation"
 if ! python -m playwright install chromium >/dev/null 2>&1; then
-    say "WARNING: 'playwright install chromium' failed."
-    say "If browser-based discovery (LinkedIn etc.) errors out, run manually:"
-    say "  source .venv/bin/activate && playwright install chromium"
+    say "Note: 'playwright install chromium' failed — that's OK if Google"
+    say "Chrome is installed (the automation uses channel=chrome)."
 fi
 
 cat <<NEXT
