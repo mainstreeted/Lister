@@ -11,8 +11,10 @@ from rich.console import Console
 from rich.table import Table
 
 from . import db
+from .apply import ZipRecruiterSubmitter
 from .config import load_criteria, load_resume
 from .discovery import EmailDigestConnector, GreenhouseConnector, LinkedInConnector
+from .models import Application, ApplicationStatus
 from .ranker import ApiRanker, ClaudeCliRanker, MockRanker, summarize_resume
 
 load_dotenv()
@@ -262,6 +264,189 @@ def login(
         f"[green]✓ {key} session saved. "
         "Run `lister discover` and it will use this login automatically.[/]"
     )
+
+
+SUBMITTERS = {
+    "ziprecruiter": ZipRecruiterSubmitter,
+    # "indeed": IndeedSubmitter,        # next session
+    # "greenhouse": GreenhouseSubmitter, # next session
+}
+
+
+@app.command()
+def apply(
+    platform: str = typer.Option(
+        "ziprecruiter",
+        "--platform",
+        help="Which platform's submitter to run. Currently only 'ziprecruiter' is wired.",
+    ),
+    limit: int = typer.Option(
+        3,
+        "--limit",
+        "-n",
+        help="Max applications to attempt this run (cap on top-ranked candidates).",
+    ),
+    min_score: int | None = typer.Option(
+        None,
+        "--min-score",
+        help="Override the threshold from criteria.daily.min_match_score.",
+    ),
+    dry_run: bool = typer.Option(
+        True,
+        "--dry-run/--no-dry-run",
+        help="Default is DRY RUN — walks the form but does not click submit. "
+        "Pass --no-dry-run to actually submit.",
+    ),
+    verbose: bool = typer.Option(False, "-v", "--verbose"),
+) -> None:
+    """Apply (or dry-run) to top-ranked, not-yet-applied jobs.
+
+    Picks the highest-scoring jobs above the threshold that don't already
+    have a non-failed entry in the applications table, opens a logged-in
+    browser, and drives each through the platform's submitter. Records the
+    outcome (submitted / dry_run / skipped / failed) in the DB.
+
+    The default is DRY RUN. To send real applications, pass --no-dry-run.
+    """
+    _setup_logging(verbose)
+    criteria = load_criteria()
+
+    submitter_cls = SUBMITTERS.get(platform.lower())
+    if submitter_cls is None:
+        console.print(
+            f"[red]No submitter for platform {platform!r}. "
+            f"Available: {', '.join(SUBMITTERS)}.[/]"
+        )
+        raise typer.Exit(1)
+
+    threshold = min_score if min_score is not None else criteria.daily.min_match_score
+    console.print(
+        f"[cyan]apply: platform={platform}  limit={limit}  "
+        f"min_score={threshold}  dry_run={dry_run}[/]"
+    )
+    if dry_run:
+        console.print(
+            "[yellow]DRY RUN — no real applications will be submitted. "
+            "Pass --no-dry-run to actually submit.[/]"
+        )
+
+    with db.connect() as conn:
+        candidates = db.top_unapplied_jobs(
+            conn, platform=platform.lower(), min_score=threshold, limit=limit
+        )
+
+    if not candidates:
+        console.print(
+            f"[yellow]No {platform} jobs scored ≥ {threshold} that haven't already "
+            f"been applied to. Run `lister discover` to refresh.[/]"
+        )
+        return
+
+    console.print(f"[green]Found {len(candidates)} candidate(s):[/]")
+    preview = Table(show_header=True, header_style="bold")
+    preview.add_column("Score", justify="right")
+    preview.add_column("Company")
+    preview.add_column("Title")
+    preview.add_column("URL", overflow="fold", max_width=60)
+    for c in candidates:
+        preview.add_row(
+            str(c["score"]),
+            c["company"] or "—",
+            (c["title"] or "")[:80],
+            (c["apply_url"] or "")[:200],
+        )
+    console.print(preview)
+
+    submitter = submitter_cls()
+
+    from .browser import browser_context
+
+    results: list[tuple[dict, "SubmitResult"]] = []  # type: ignore[name-defined]
+    try:
+        with browser_context(platform.lower(), headless=True) as ctx:
+            for cand in candidates:
+                console.print(
+                    f"\n[bold cyan]>>> {cand['title'][:80]!r} at "
+                    f"{cand['company'] or 'unknown'} (score {cand['score']})[/]"
+                )
+                job_id = cand["id"]
+                # Build a Job-shaped dict for the submitter.
+                from .models import Job, Platform
+
+                job = Job(
+                    id=cand["id"],
+                    platform=Platform(cand["platform"]),
+                    platform_id=cand["platform_id"],
+                    company=cand["company"] or "",
+                    title=cand["title"] or "",
+                    location=cand["location"],
+                    remote=bool(cand["remote"]),
+                    description_text=cand["description_text"] or "",
+                    apply_url=cand["apply_url"],
+                    listing_url=cand["listing_url"],
+                )
+                try:
+                    result = submitter.submit(job, criteria, ctx, dry_run=dry_run)
+                except Exception as e:
+                    log.exception("[%s] submitter crashed: %s", platform, e)
+                    from .apply.base import SubmitResult
+
+                    result = SubmitResult(
+                        ApplicationStatus.FAILED,
+                        "submitter_crashed",
+                        str(e)[:500],
+                    )
+
+                console.print(
+                    f"    → [{_color_for(result.status)}]{result.status.value}[/] "
+                    f"({result.reason}) — {result.notes[:200]}"
+                )
+
+                # Record outcome.
+                import datetime as _dt
+
+                with db.connect() as conn:
+                    db.save_application(
+                        conn,
+                        Application(
+                            job_id=job_id,
+                            status=result.status,
+                            score=cand["score"],
+                            submitted_at=(
+                                _dt.datetime.utcnow() if result.success else None
+                            ),
+                            notes=result.notes or result.reason,
+                            error=(result.notes if result.status == ApplicationStatus.FAILED else None),
+                        ),
+                    )
+                results.append((cand, result))
+    except Exception as e:
+        log.exception("apply: fatal error in browser context: %s", e)
+        console.print(f"[red]apply: fatal error: {e}[/]")
+        raise typer.Exit(1)
+
+    # Summary.
+    submitted = sum(1 for _, r in results if r.status == ApplicationStatus.SUBMITTED)
+    dryrun = sum(1 for _, r in results if r.status == ApplicationStatus.DRY_RUN)
+    skipped = sum(1 for _, r in results if r.status == ApplicationStatus.SKIPPED)
+    failed = sum(1 for _, r in results if r.status == ApplicationStatus.FAILED)
+    console.print(
+        f"\n[bold]Summary:[/] submitted={submitted}  dry_run={dryrun}  "
+        f"skipped={skipped}  failed={failed}"
+    )
+    if dry_run and dryrun > 0:
+        console.print(
+            "[yellow]These were dry runs. Re-run with --no-dry-run to actually submit.[/]"
+        )
+
+
+def _color_for(status: ApplicationStatus) -> str:
+    return {
+        ApplicationStatus.SUBMITTED: "green",
+        ApplicationStatus.DRY_RUN: "cyan",
+        ApplicationStatus.SKIPPED: "yellow",
+        ApplicationStatus.FAILED: "red",
+    }.get(status, "white")
 
 
 if __name__ == "__main__":

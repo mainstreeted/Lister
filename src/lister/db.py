@@ -133,6 +133,35 @@ def submissions_today(conn: sqlite3.Connection) -> int:
     return cur.fetchone()[0]
 
 
+def top_unapplied_jobs(
+    conn: sqlite3.Connection,
+    platform: str | None = None,
+    min_score: int = 0,
+    limit: int = 5,
+) -> list[dict]:
+    """Top-ranked jobs that have NOT been submitted/dry-run/skipped yet.
+
+    Returns dicts shaped like the ``jobs`` row + ``score`` for convenience.
+    Used by ``lister apply`` to pick targets.
+    """
+    sql = """
+        SELECT j.*, s.score
+        FROM jobs j
+        JOIN scores s ON s.job_id = j.id
+        LEFT JOIN applications a ON a.job_id = j.id
+        WHERE s.score >= ?
+          AND (a.job_id IS NULL OR a.status = 'failed')
+    """
+    params: list = [min_score]
+    if platform:
+        sql += " AND j.platform = ?"
+        params.append(platform)
+    sql += " ORDER BY s.score DESC LIMIT ?"
+    params.append(limit)
+    cur = conn.execute(sql, params)
+    return [dict(r) for r in cur.fetchall()]
+
+
 def save_application(conn: sqlite3.Connection, app: Application) -> None:
     conn.execute(
         """

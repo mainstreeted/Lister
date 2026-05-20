@@ -58,6 +58,7 @@ class ApplicationStatus(str, Enum):
     QUEUED = "queued"
     TAILORED = "tailored"
     SUBMITTED = "submitted"
+    DRY_RUN = "dry_run"  # walked the form successfully but did not click submit
     FAILED = "failed"
     SKIPPED = "skipped"
 
