@@ -91,8 +91,25 @@ class ZipRecruiterSubmitter(Submitter):
 
         # Tracking URLs redirect; let the page settle before we look at it.
         human_pause(0.6, 1.2)
+        try:
+            page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:
+            pass
+        # A scroll nudges lazy-loaded CTAs into the DOM.
+        try:
+            page.mouse.wheel(0, 1200)
+            human_pause(0.3, 0.7)
+        except Exception:
+            pass
+
         final_url = page.url
-        log.info("[ziprecruiter] [%s] landed on %s", job.id, final_url[:120])
+        page_title = self._safe_title(page)
+        log.info(
+            "[ziprecruiter] [%s] landed on %s | title=%r",
+            job.id,
+            final_url[:120],
+            page_title[:100],
+        )
 
         if not self._is_logged_in(page):
             log.warning("[ziprecruiter] [%s] not logged in — aborting", job.id)
@@ -129,10 +146,12 @@ class ZipRecruiterSubmitter(Submitter):
         button, button_text = self._find_apply_button(page)
         if button is None:
             log.warning("[ziprecruiter] [%s] no apply button found on page", job.id)
+            self._dump_debug(page, job)
             return SubmitResult(
                 ApplicationStatus.FAILED,
                 "no_apply_button",
-                "Could not locate an Apply button. Page may have changed shape.",
+                f"No Apply button. Landed on {final_url[:80]} (title: {page_title[:60]!r}). "
+                "See data/ screenshot + logged body snippet.",
             )
 
         log.info(
@@ -275,3 +294,34 @@ class ZipRecruiterSubmitter(Submitter):
             return page.locator("body").inner_text(timeout=3000)
         except Exception:
             return ""
+
+    def _safe_title(self, page) -> str:
+        try:
+            return page.title() or ""
+        except Exception:
+            return ""
+
+    def _dump_debug(self, page, job: Job) -> None:
+        """When something unexpected happens, capture what the page actually is."""
+        body = self._body_text(page)
+        snippet = " | ".join(
+            line.strip() for line in body[:800].splitlines() if line.strip()
+        )
+        log.warning("[ziprecruiter] [%s] DEBUG title: %r", job.id, self._safe_title(page))
+        log.warning("[ziprecruiter] [%s] DEBUG body: %s", job.id, snippet[:700])
+        # Flag the obvious states explicitly.
+        low = body.lower()
+        if "log in" in low or "sign in" in low:
+            log.warning("[ziprecruiter] [%s] DEBUG: page mentions log in / sign in", job.id)
+        if "expired" in low or "no longer available" in low:
+            log.warning("[ziprecruiter] [%s] DEBUG: page mentions expired / unavailable", job.id)
+        try:
+            from ..config import REPO_ROOT
+
+            safe = re.sub(r"[^A-Za-z0-9]+", "-", job.platform_id)[:24]
+            out = REPO_ROOT / "data" / f"zr-apply-debug-{safe}.png"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(out), full_page=True)
+            log.warning("[ziprecruiter] [%s] DEBUG screenshot: %s", job.id, out)
+        except Exception as e:
+            log.warning("[ziprecruiter] [%s] DEBUG screenshot failed: %s", job.id, e)
