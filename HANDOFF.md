@@ -94,9 +94,10 @@ package with the WSL `lister` code. The two halves talk only via JSON files:
 - `chrome.py` — focuses Chrome (pygetwindow), navigates via the omnibox
   (Ctrl+L + real typing), human-shaped mouse moves (eased, bowed path, slight
   overshoot), per-char typing jitter, randomized pauses.
-- `locate.py` — finds on-screen elements by description via Claude vision.
-  Backend `claude-cli` (default, free — Ed's Claude Max) or `api`. Never reads
-  the DOM (that would be instrumentation).
+- `locate.py` — finds on-screen elements by handing a screenshot to the free
+  `claude` CLI (Ed's Claude Max, no API key). Never reads the DOM. This step
+  happens off to the side and never touches the browser, so the job site
+  cannot see it.
 - `applyqueue.py` — JSON queue/results I/O (named to avoid shadowing stdlib
   `queue`). Schema mirrors `src/lister/queue_io.py`.
 - `config.example.json`, `requirements.txt`, `run_overnight.ps1` (Task
@@ -113,11 +114,16 @@ the applier falls back to ZipRecruiter search by `search_query`
    then `python windows/applier.py`, then check `windows/logs/` screenshots.
    Likely needs tuning: vision coordinate accuracy, the `claude-cli` invocation
    (`--allowedTools Read` permission prompt behavior on Windows), window focus.
-2. Multi-step ZR forms — currently recorded as `skipped`. Add form-filling.
-3. Indeed + LinkedIn flows in the applier (same macro approach).
-4. Greenhouse + Indeed clean-API submitters (Greenhouse has no Cloudflare wall).
-5. Tailoring layer (per-job resume variant + cover letter via Claude CLI).
-6. `lister daily` orchestrator + email digest of what was submitted.
+2. **Closed / expired job detection.** Even a day-old recommended-job link
+   can land on a "this job is closed" page with a grayed-out Apply button.
+   The applier should recognize that (via the screenshot locator) and record
+   `skipped` / reason `job_closed`, so the pipeline moves on cleanly instead
+   of erroring or clicking a dead button. (Ed flagged this.)
+3. Multi-step ZR forms — currently recorded as `skipped`. Add form-filling.
+4. Indeed + LinkedIn flows in the applier (same macro approach).
+5. Greenhouse + Indeed clean-API submitters (Greenhouse has no Cloudflare wall).
+6. Tailoring layer (per-job resume variant + cover letter via Claude CLI).
+7. `lister daily` orchestrator + email digest of what was submitted.
 
 ## How to run things (cold start)
 

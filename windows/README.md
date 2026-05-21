@@ -44,13 +44,13 @@ repo is reachable from Windows at
    ```
    pip install -r requirements.txt
    ```
-3. **Element location backend.** The applier finds buttons by *looking* at
-   the screen (it never touches the DOM). It uses Claude's vision:
-   - `claude-cli` (default, free) — needs the **Claude Code CLI installed on
-     Windows** and signed in to Ed's Claude Max plan. Verify with
-     `claude --version` in a Windows terminal.
-   - `api` — set `ANTHROPIC_API_KEY` and `"locator": "api"` in config. Costs a
-     few cents per run.
+3. **Claude Code on Windows.** The applier finds buttons by *looking* at the
+   screen — it hands a screenshot to Claude and asks where the button is. It
+   never reads the page's code. This uses the free `claude` command, covered
+   by Ed's Claude Max subscription: no API key, no cost. It needs the **Claude
+   Code CLI installed on Windows** and signed in. Verify with `claude
+   --version` in a Windows terminal. If `claude` is not on PATH, put its full
+   path in `config.json` under `claude_cli_path`.
 4. **Create `config.json`** — copy `config.example.json` to `config.json` and
    edit the paths. The `_`-prefixed keys are comments; you can leave them.
    Get the exact WSL path by running `wslpath -w ~/Lister/data` in Ubuntu.

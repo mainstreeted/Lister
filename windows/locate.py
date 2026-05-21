@@ -8,15 +8,13 @@ does: look at the screen, find the button, move the mouse there.
 ("the blue '1-Click Apply' button") and returns the pixel coordinates of
 that element's center, or None if it is not visible.
 
-Two backends:
-  - "claude-cli": shells out to the local `claude` CLI (Ed's Claude Max
-    subscription — no API key, no per-call cost). The default.
-  - "api": the Anthropic SDK, if ANTHROPIC_API_KEY is set.
+It does this by handing the screenshot to the local ``claude`` CLI — Ed's
+Claude Max subscription, no API key, no per-call cost. This whole step
+happens off to the side, between this machine and Claude; it never touches
+the browser, so the job site cannot see it.
 """
 from __future__ import annotations
 
-import base64
-import io
 import json
 import logging
 import re
@@ -41,18 +39,6 @@ Respond with ONLY one line of JSON and nothing else:
 x and y are the pixel coordinates of the CENTER of the element, measured
 from the top-left corner of the image."""
 
-_API_PROMPT = """This is a {w}x{h} pixel screenshot of a web browser.
-
-Locate this element:
-  {description}
-
-Respond with ONLY one line of JSON and nothing else:
-  {{"found": true, "x": <int>, "y": <int>}}   if you can see it
-  {{"found": false}}                          if it is not visible
-
-x and y are the pixel coordinates of the CENTER of the element, measured
-from the top-left corner of the image."""
-
 
 def _extract_json(text: str) -> dict | None:
     """Pull the last {...} JSON object out of a blob of model output."""
@@ -66,25 +52,14 @@ def _extract_json(text: str) -> dict | None:
 
 
 class Locator:
-    def __init__(
-        self,
-        backend: str = "claude-cli",
-        claude_cli_path: str = "claude",
-        api_model: str = "claude-sonnet-4-6",
-        timeout_s: int = 150,
-    ):
-        self.backend = backend
+    def __init__(self, claude_cli_path: str = "claude", timeout_s: int = 150):
         self.claude_cli_path = claude_cli_path
-        self.api_model = api_model
         self.timeout_s = timeout_s
 
     def find(self, image, description: str) -> tuple[int, int] | None:
         """Return (x, y) center of the described element, or None if absent."""
         w, h = image.size
-        if self.backend == "api":
-            result = self._find_api(image, description, w, h)
-        else:
-            result = self._find_cli(image, description, w, h)
+        result = self._ask_claude(image, description, w, h)
 
         if not result or not result.get("found"):
             log.info("locate: %r — not found", description)
@@ -100,9 +75,7 @@ class Locator:
         log.info("locate: %r — found at (%d, %d)", description, x, y)
         return x, y
 
-    # ------------------------------------------------------------------
-
-    def _find_cli(self, image, description: str, w: int, h: int) -> dict | None:
+    def _ask_claude(self, image, description: str, w: int, h: int) -> dict | None:
         with tempfile.TemporaryDirectory() as tmp:
             shot = Path(tmp) / "screen.png"
             image.save(shot)
@@ -121,7 +94,8 @@ class Locator:
             except FileNotFoundError:
                 log.error(
                     "locate: `%s` not found. Install Claude Code on Windows "
-                    "or set locator='api' in config.", self.claude_cli_path
+                    "and set its path in config.json (claude_cli_path).",
+                    self.claude_cli_path,
                 )
                 return None
             except subprocess.TimeoutExpired:
@@ -141,48 +115,3 @@ class Locator:
             except json.JSONDecodeError:
                 pass
             return _extract_json(text)
-
-    def _find_api(self, image, description: str, w: int, h: int) -> dict | None:
-        try:
-            import anthropic
-        except ImportError:
-            log.error("locate: anthropic SDK not installed (pip install anthropic)")
-            return None
-
-        buf = io.BytesIO()
-        image.save(buf, format="PNG")
-        b64 = base64.standard_b64encode(buf.getvalue()).decode()
-
-        try:
-            client = anthropic.Anthropic()
-            msg = client.messages.create(
-                model=self.api_model,
-                max_tokens=200,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": b64,
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": _API_PROMPT.format(
-                                w=w, h=h, description=description
-                            ),
-                        },
-                    ],
-                }],
-            )
-        except Exception as e:
-            log.warning("locate: Anthropic API call failed: %s", e)
-            return None
-
-        text = "".join(
-            block.text for block in msg.content if block.type == "text"
-        )
-        return _extract_json(text)

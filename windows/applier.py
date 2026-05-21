@@ -49,9 +49,7 @@ class Config:
         self.queue_file = data.get("queue_file", "")
         self.results_file = data.get("results_file", "")
         self.log_dir = data.get("log_dir", "logs")
-        self.locator = data.get("locator", "claude-cli")
         self.claude_cli_path = data.get("claude_cli_path", "claude")
-        self.api_model = data.get("api_model", "claude-sonnet-4-6")
         self.failsafe = bool(data.get("failsafe", True))
         self.page_load_seconds = tuple(data.get("page_load_seconds", [5, 9]))
         self.confirm_wait_seconds = tuple(data.get("confirm_wait_seconds", [3, 6]))
@@ -269,11 +267,7 @@ def main() -> int:
              " (forced by --dry-run)" if args.dry_run and not queue_dry_run else "")
 
     chrome.configure(failsafe=cfg.failsafe)
-    loc = Locator(
-        backend=cfg.locator,
-        claude_cli_path=cfg.claude_cli_path,
-        api_model=cfg.api_model,
-    )
+    loc = Locator(claude_cli_path=cfg.claude_cli_path)
 
     shot_dir = log_dir / "screens" / datetime.now().strftime("%Y%m%d-%H%M%S")
     shot_dir.mkdir(parents=True, exist_ok=True)

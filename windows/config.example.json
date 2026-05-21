@@ -10,14 +10,8 @@
   "_log_dir": "Run logs + debug screenshots. Relative paths resolve next to applier.py.",
   "log_dir": "logs",
 
-  "_locator": "How on-screen elements are found: 'claude-cli' (free, uses your Claude Max subscription) or 'api' (needs ANTHROPIC_API_KEY).",
-  "locator": "claude-cli",
-
-  "_claude_cli_path": "Path to the claude CLI on Windows. 'claude' if it is on PATH; otherwise the full path to claude.exe / claude.cmd.",
+  "_claude_cli_path": "Path to the claude CLI on Windows, used to find buttons on screen. 'claude' if it is on PATH; otherwise the full path to claude.exe / claude.cmd.",
   "claude_cli_path": "claude",
-
-  "_api_model": "Vision model used only when locator is 'api'.",
-  "api_model": "claude-sonnet-4-6",
 
   "_failsafe": "If true, slamming the mouse into a screen corner aborts the run. Keep true while testing.",
   "failsafe": true,
