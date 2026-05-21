@@ -25,11 +25,15 @@ Windows machine. Branch: `claude/resume-automation-tool-0hMKV` (PR #1).
   jobs 0-100 against criteria + resume.
 - **Storage** — SQLite (`data/lister.sqlite`): jobs, scores, applications.
 - **CLI** — `lister discover`, `lister apply`, `lister status`,
-  `lister login`, `lister import-cookies`.
+  `lister login`, `lister import-cookies`, `lister export-queue`,
+  `lister import-results`.
 - Config in `config/criteria.yaml` (gitignored); resumes in
   `config/resumes/*.md` (gitignored).
+- **Apply — Windows macro applier** (`windows/`) — built this session; see
+  "The apply step" below. Code-complete and verified on the WSL side; the
+  Windows half is NOT yet tested on Ed's real machine.
 
-## The OPEN PROBLEM — the `apply` step
+## The apply step — Cloudflare, and how the macro applier solves it
 
 ZipRecruiter / Indeed / LinkedIn are behind Cloudflare bot-detection. Every
 attempt to drive a *launched* browser (Playwright, then patchright, then a
@@ -41,6 +45,8 @@ challenged because it has *earned trust* over months. Trust cannot be
 manufactured — only inherited. Any fresh/launched browser starts at zero trust
 and gets challenged. So the automation MUST run inside Ed's real, established,
 everyday Chrome.
+
+The `windows/` macro applier implements exactly that (see build status below).
 
 ## ARCHITECTURE DECISION (locked this session)
 
@@ -66,36 +72,66 @@ Residual risk (accepted): behavioral detection (robotic mouse paths/timing).
 Mitigate with human-shaped cursor curves + randomized delays + low volume
 (~1 application/platform/day). Worst case: make a new account.
 
-## NEXT SESSION — build plan
+## Windows macro applier — BUILT this session
 
-1. Build a **Windows-side macro applier** (Ed's real Chrome lives on Windows;
-   the macro must run on Windows). Tool choice to settle: AutoHotkey vs.
-   Python-on-Windows with `pyautogui` — both do real OS input.
-2. Flow: read the apply-queue → for each job, drive real Chrome with real
-   input (open URL, locate Apply button via screenshot, click, fill, submit) →
-   write results back.
-3. Element location: screenshot the screen, locate the target (image match or
-   hand the screenshot to Claude). Not blind coordinate replay.
-4. The WSL brain (discover/rank/DB) is unchanged; it writes the apply-queue to
-   a file the Windows macro reads across the WSL/Windows boundary.
-5. ZipRecruiter `/km/` email links expire — the macro should search ZR by job
-   title + company to reach a live posting, not trust the dead tracking link.
-6. Schedule it (Windows Task Scheduler) for ~4am.
+Tool choice settled: **Python + pyautogui** (consistent with the codebase;
+screenshots/JSON/Claude-vision are far easier than in AutoHotkey).
 
-Also still open / lower priority:
-- Greenhouse + Indeed application submitters (clean-API path; Greenhouse has
-  no Cloudflare wall — it is the most automatable platform if ever needed).
-- Tailoring layer (per-job resume variant + cover letter via Claude CLI).
-- `lister daily` orchestrator + email digest of what was submitted.
+Lives in `windows/` — a standalone runtime, separate Python install, no shared
+package with the WSL `lister` code. The two halves talk only via JSON files:
+
+- WSL: `lister export-queue` → writes `data/apply-queue.json`. Marks exported
+  jobs `queued` in the DB so they aren't re-exported.
+- Windows: `python windows/applier.py` → reads the queue, focuses Ed's real
+  Chrome, drives it with real OS mouse/keyboard input, writes
+  `data/apply-results.json`.
+- WSL: `lister import-results` → ingests outcomes into the DB.
+
+`windows/` modules:
+- `applier.py` — entry point: queue → per-job flow → results. Dry-run honored
+  from the queue's flag (`--dry-run` can only make it *safer*, never force a
+  real submit). Logs + debug screenshots under `windows/logs/`.
+- `chrome.py` — focuses Chrome (pygetwindow), navigates via the omnibox
+  (Ctrl+L + real typing), human-shaped mouse moves (eased, bowed path, slight
+  overshoot), per-char typing jitter, randomized pauses.
+- `locate.py` — finds on-screen elements by description via Claude vision.
+  Backend `claude-cli` (default, free — Ed's Claude Max) or `api`. Never reads
+  the DOM (that would be instrumentation).
+- `applyqueue.py` — JSON queue/results I/O (named to avoid shadowing stdlib
+  `queue`). Schema mirrors `src/lister/queue_io.py`.
+- `config.example.json`, `requirements.txt`, `run_overnight.ps1` (Task
+  Scheduler launcher), `README.md` (full setup).
+
+ZR `/km/` expired-link handling: if no Apply button is found on the listing,
+the applier falls back to ZipRecruiter search by `search_query`
+(title + company), opens the best result, and looks again.
+
+### NOT yet done — next session
+
+1. **Test the Windows half on Ed's real machine.** None of `windows/` has run
+   on Windows yet. First real test: `lister export-queue --limit 1` (dry-run),
+   then `python windows/applier.py`, then check `windows/logs/` screenshots.
+   Likely needs tuning: vision coordinate accuracy, the `claude-cli` invocation
+   (`--allowedTools Read` permission prompt behavior on Windows), window focus.
+2. Multi-step ZR forms — currently recorded as `skipped`. Add form-filling.
+3. Indeed + LinkedIn flows in the applier (same macro approach).
+4. Greenhouse + Indeed clean-API submitters (Greenhouse has no Cloudflare wall).
+5. Tailoring layer (per-job resume variant + cover letter via Claude CLI).
+6. `lister daily` orchestrator + email digest of what was submitted.
 
 ## How to run things (cold start)
 
 In Ubuntu: `lg`  (alias for `cd ~/Lister && source .venv/bin/activate`)
 
 - `lister discover --limit 25` — discover + rank, show table.
-- `lister apply --limit 3` — dry-run apply (currently blocked by Cloudflare —
-  see open problem).
+- `lister export-queue --limit 2` — write `data/apply-queue.json` (dry-run by
+  default; `--no-dry-run` to authorize real submission).
+- *(on Windows)* `python windows\applier.py` — drive real Chrome through the
+  queue. See `windows/README.md` for setup.
+- `lister import-results` — pull the Windows applier's outcomes into the DB.
 - `lister status` — recent applications.
+- `lister apply --limit 3` — the OLD launched-browser path; Cloudflare-blocked,
+  superseded by the Windows applier. Kept for reference.
 
 ## How to resume in a fresh session
 

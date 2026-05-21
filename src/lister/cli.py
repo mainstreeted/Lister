@@ -504,5 +504,162 @@ def import_cookies(
     )
 
 
+@app.command(name="export-queue")
+def export_queue(
+    platform: str | None = typer.Option(
+        None,
+        "--platform",
+        help="Limit the queue to one platform (e.g. ziprecruiter). Default: all.",
+    ),
+    limit: int = typer.Option(
+        3, "--limit", "-n", help="Max jobs to put in the queue."
+    ),
+    min_score: int | None = typer.Option(
+        None, "--min-score", help="Override criteria.daily.min_match_score."
+    ),
+    dry_run: bool = typer.Option(
+        True,
+        "--dry-run/--no-dry-run",
+        help="Tells the Windows applier whether to actually submit. Default: dry run.",
+    ),
+    out: Path = typer.Option(
+        None, "--out", help="Where to write the queue JSON. Default: data/apply-queue.json."
+    ),
+) -> None:
+    """Export top-ranked, not-yet-applied jobs to a queue file for the Windows applier.
+
+    The Windows-side macro (``windows/applier.py``) reads this file, drives
+    Ed's real Chrome, and writes ``apply-results.json`` back — which
+    ``lister import-results`` then ingests. See ``windows/README.md``.
+
+    Exported jobs are marked ``queued`` in the DB so they aren't re-exported.
+    """
+    from . import queue_io
+
+    criteria = load_criteria()
+    threshold = min_score if min_score is not None else criteria.daily.min_match_score
+    out_path = out or queue_io.DEFAULT_QUEUE_PATH
+
+    with db.connect() as conn:
+        candidates = db.top_unapplied_jobs(
+            conn, platform=platform.lower() if platform else None,
+            min_score=threshold, limit=limit,
+        )
+        if not candidates:
+            console.print(
+                f"[yellow]No jobs scored ≥ {threshold} that haven't been applied to. "
+                "Run `lister discover` first.[/]"
+            )
+            raise typer.Exit(0)
+
+        jobs = []
+        for c in candidates:
+            title = c["title"] or ""
+            company = c["company"] or ""
+            jobs.append(
+                {
+                    "job_id": c["id"],
+                    "platform": c["platform"],
+                    "company": company,
+                    "title": title,
+                    "score": c["score"],
+                    "apply_url": c["apply_url"] or "",
+                    "listing_url": c["listing_url"] or "",
+                    "search_query": f"{title} {company}".strip(),
+                }
+            )
+
+        # Mark them queued so a second export-queue run doesn't re-include them.
+        for c in candidates:
+            db.save_application(
+                conn,
+                Application(
+                    job_id=c["id"],
+                    status=ApplicationStatus.QUEUED,
+                    score=c["score"],
+                    notes="Exported to apply-queue for the Windows applier.",
+                ),
+            )
+
+    queue_io.write_queue(out_path, jobs, dry_run=dry_run)
+    console.print(
+        f"[green]✓ Wrote {len(jobs)} job(s) to {out_path}[/]  "
+        f"(dry_run={dry_run})"
+    )
+    console.print(
+        "[cyan]Next: on Windows, run `python windows\\applier.py`, then back "
+        "here run `lister import-results`.[/]"
+    )
+
+
+@app.command(name="import-results")
+def import_results(
+    path: Path = typer.Option(
+        None,
+        "--path",
+        help="Results JSON from the Windows applier. Default: data/apply-results.json.",
+    ),
+) -> None:
+    """Ingest the Windows applier's results file into the DB.
+
+    Updates each job's application row with the outcome the macro reported
+    (submitted / dry_run / failed / skipped).
+    """
+    import datetime as _dt
+
+    from . import queue_io
+
+    results_path = path or queue_io.DEFAULT_RESULTS_PATH
+    try:
+        results = queue_io.read_results(results_path)
+    except (FileNotFoundError, ValueError) as e:
+        console.print(f"[red]{e}[/]")
+        raise typer.Exit(1)
+
+    if not results:
+        console.print(f"[yellow]No results in {results_path}.[/]")
+        raise typer.Exit(0)
+
+    counts: dict[str, int] = {}
+    with db.connect() as conn:
+        for r in results:
+            job_id = r.get("job_id")
+            if not job_id:
+                continue
+            try:
+                status = ApplicationStatus(r.get("status", "failed"))
+            except ValueError:
+                status = ApplicationStatus.FAILED
+            # Preserve the score recorded when the job was queued/scored.
+            row = conn.execute(
+                "SELECT score FROM scores WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            score = row["score"] if row else None
+            submitted = (
+                _dt.datetime.utcnow()
+                if status == ApplicationStatus.SUBMITTED
+                else None
+            )
+            db.save_application(
+                conn,
+                Application(
+                    job_id=job_id,
+                    status=status,
+                    score=score,
+                    submitted_at=submitted,
+                    notes=(r.get("notes") or r.get("reason") or "")[:500],
+                    error=(
+                        (r.get("notes") or r.get("reason"))
+                        if status == ApplicationStatus.FAILED
+                        else None
+                    ),
+                ),
+            )
+            counts[status.value] = counts.get(status.value, 0) + 1
+
+    summary = "  ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+    console.print(f"[green]✓ Imported {len(results)} result(s):[/] {summary}")
+
+
 if __name__ == "__main__":
     app()

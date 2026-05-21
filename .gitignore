@@ -45,6 +45,10 @@ build/
 playwright-report/
 test-results/
 
+# Windows applier — local config (holds machine paths) and run output
+windows/config.json
+windows/logs/
+
 # IDE
 .vscode/
 .idea/
