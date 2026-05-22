@@ -64,23 +64,50 @@ class Locator:
         self.timeout_s = timeout_s
 
     def find(self, image, description: str) -> tuple[int, int] | None:
-        """Return (x, y) center of the described element, or None if absent."""
-        w, h = image.size
-        result = self._ask_claude(image, description, w, h)
+        """Return (x, y) center of the described element, or None if absent.
 
-        if not result or not result.get("found"):
+        Two passes: a rough locate on the whole screenshot, then a refine
+        pass on a crop centred on that point. A small, crisp close-up lets
+        the model centre the target far more precisely than it can on a
+        full-screen shot.
+        """
+        w, h = image.size
+        rough = self._coords(self._ask_claude(image, description, w, h), w, h)
+        if rough is None:
             log.info("locate: %r — not found", description)
+            return None
+        rx, ry = rough
+
+        # Refine: re-locate within a crop centred on the rough point.
+        hw, hh = 360, 260
+        left, top = max(0, rx - hw), max(0, ry - hh)
+        right, bottom = min(w, rx + hw), min(h, ry + hh)
+        crop = image.crop((left, top, right, bottom))
+        cw, ch = crop.size
+        fine = self._coords(
+            self._ask_claude(crop, description, cw, ch), cw, ch
+        )
+        if fine is not None:
+            x = max(0, min(w - 1, left + fine[0]))
+            y = max(0, min(h - 1, top + fine[1]))
+            log.info("locate: %r — found at (%d, %d) [refined]", description, x, y)
+            return x, y
+
+        log.info("locate: %r — found at (%d, %d) [rough]", description, rx, ry)
+        return rx, ry
+
+    @staticmethod
+    def _coords(result: dict | None, w: int, h: int) -> tuple[int, int] | None:
+        """Pull a clamped integer (x, y) out of a model result, or None."""
+        if not result or not result.get("found"):
             return None
         try:
             x, y = int(result["x"]), int(result["y"])
         except (KeyError, ValueError, TypeError):
-            log.warning("locate: %r — malformed coords %r", description, result)
+            log.warning("locate: malformed coords %r", result)
             return None
-        # Clamp to the image so a hallucinated coordinate can't click off-screen.
-        x = max(0, min(w - 1, x))
-        y = max(0, min(h - 1, y))
-        log.info("locate: %r — found at (%d, %d)", description, x, y)
-        return x, y
+        # Clamp so a hallucinated coordinate can't land off the image.
+        return max(0, min(w - 1, x)), max(0, min(h - 1, y))
 
     def _ask_claude(self, image, description: str, w: int, h: int) -> dict | None:
         # Resize to a fixed width so the model always works in a known,
