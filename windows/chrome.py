@@ -27,6 +27,15 @@ log = logging.getLogger("applier.chrome")
 
 def configure(failsafe: bool = True) -> None:
     """Set global pyautogui behavior. Call once at startup."""
+    # Make the process DPI-aware so screenshots and mouse coordinates live in
+    # the same pixel space. Without this, on a display scaled to 125%/150%
+    # the screenshot is in physical pixels but the mouse moves in logical
+    # pixels — so every located click lands in the wrong place.
+    try:
+        import ctypes
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception as e:  # non-Windows, or the call is unavailable
+        log.warning("could not set DPI awareness: %s", e)
     # FAILSAFE: slamming the mouse into a screen corner aborts the run.
     # Keep it on while Ed is testing; the overnight run never goes near a
     # corner, so it does not trip on its own.

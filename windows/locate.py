@@ -41,6 +41,12 @@ x and y are the pixel coordinates of the CENTER of the element, measured
 from the top-left corner of the image."""
 
 
+# Screenshots are resized to this width before being shown to the model.
+# Full-resolution shots get downscaled unpredictably by the vision pipeline,
+# which ruins coordinate accuracy; a fixed modest size keeps it consistent.
+_MODEL_WIDTH = 1280
+
+
 def _extract_json(text: str) -> dict | None:
     """Pull the last {...} JSON object out of a blob of model output."""
     matches = re.findall(r"\{[^{}]*\}", text)
@@ -77,11 +83,21 @@ class Locator:
         return x, y
 
     def _ask_claude(self, image, description: str, w: int, h: int) -> dict | None:
+        # Resize to a fixed width so the model always works in a known,
+        # consistent coordinate space; scale its answer back up afterwards.
+        if w > _MODEL_WIDTH:
+            ratio = _MODEL_WIDTH / w
+            small = image.resize((_MODEL_WIDTH, max(1, round(h * ratio))))
+        else:
+            ratio = 1.0
+            small = image
+        sw, sh = small.size
+
         with tempfile.TemporaryDirectory() as tmp:
             shot = Path(tmp) / "screen.png"
-            image.save(shot)
+            small.save(shot)
             prompt = _PROMPT.format(
-                path=str(shot), w=w, h=h, description=description
+                path=str(shot), w=sw, h=sh, description=description
             )
             # The prompt goes in on stdin — `claude -p` reads it there when no
             # positional prompt is given. It is multi-line; keeping it off the
@@ -125,4 +141,12 @@ class Locator:
                 text = outer.get("result", proc.stdout)
             except json.JSONDecodeError:
                 pass
-            return _extract_json(text)
+            result = _extract_json(text)
+
+        # Scale coordinates from the resized image back to full resolution.
+        if result and result.get("found") and ratio != 1.0:
+            for key in ("x", "y"):
+                val = result.get(key)
+                if isinstance(val, (int, float)):
+                    result[key] = round(val / ratio)
+        return result

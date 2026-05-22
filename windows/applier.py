@@ -124,7 +124,6 @@ def apply_ziprecruiter(job: q.Job, dry_run: bool, loc: Locator, cfg: Config,
     log.info("[%s] navigate → %s", job.job_id, job.nav_url[:120])
     chrome.navigate(job.nav_url)
     chrome.pause(*cfg.page_load_seconds)
-    chrome.scroll(-600)  # nudge lazy-loaded CTAs into view
 
     img = chrome.screenshot()
     _save_shot(img, shot_dir, job, "01-landed")
