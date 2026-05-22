@@ -1,0 +1,23 @@
+{
+  "_comment": "Copy this to config.json and edit. config.json is gitignored.",
+
+  "_queue_file": "Path the WSL `lister export-queue` writes. From Windows the WSL repo is reachable at \\\\wsl.localhost\\<distro>\\home\\<user>\\Lister. Adjust the distro name and username.",
+  "queue_file": "\\\\wsl.localhost\\Ubuntu\\home\\ed\\Lister\\data\\apply-queue.json",
+
+  "_results_file": "Where this applier writes results for `lister import-results` to read.",
+  "results_file": "\\\\wsl.localhost\\Ubuntu\\home\\ed\\Lister\\data\\apply-results.json",
+
+  "_log_dir": "Run logs + debug screenshots. Relative paths resolve next to applier.py.",
+  "log_dir": "logs",
+
+  "_claude_cli_path": "Path to the claude CLI on Windows, used to find buttons on screen. 'claude' if it is on PATH; otherwise the full path to claude.exe / claude.cmd.",
+  "claude_cli_path": "claude",
+
+  "_failsafe": "If true, slamming the mouse into a screen corner aborts the run. Keep true while testing.",
+  "failsafe": true,
+
+  "_timing": "Randomized delay ranges [min, max] in seconds. Higher = slower but more human-looking.",
+  "page_load_seconds": [5, 9],
+  "confirm_wait_seconds": [3, 6],
+  "between_jobs_seconds": [20, 45]
+}

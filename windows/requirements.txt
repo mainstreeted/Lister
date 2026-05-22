@@ -1,0 +1,5 @@
+# Windows macro applier dependencies. Install with:  pip install -r requirements.txt
+# These run on a native Windows Python, separate from the WSL `lister` package.
+pyautogui>=0.9.54
+pygetwindow>=0.0.9
+pillow>=10.0
