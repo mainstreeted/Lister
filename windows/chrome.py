@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import random
+import subprocess
 import time
 
 import pyautogui
@@ -99,11 +100,22 @@ def close_tab() -> None:
     pause(0.4, 0.9)
 
 
+def _set_clipboard(text: str) -> None:
+    """Put text on the Windows clipboard via the built-in clip.exe."""
+    subprocess.run(["clip"], input=text, text=True, check=False)
+
+
 def navigate(url: str) -> None:
-    """Focus the address bar, type a URL, and go. Real keyboard, no scripting."""
+    """Go to a URL: focus the address bar, paste the URL, press Enter.
+
+    The URL is pasted, not typed. ZipRecruiter tracking URLs run to many
+    hundreds of characters — typing those keystroke-by-keystroke is slow and
+    fragile, and pasting a URL is itself perfectly ordinary human behavior.
+    """
+    _set_clipboard(url)
     press("ctrl", "l")          # focus + select the omnibox
     pause(0.2, 0.5)
-    human_type(url)
+    press("ctrl", "v")          # paste the URL
     pause(0.3, 0.7)
     pyautogui.press("enter")
 

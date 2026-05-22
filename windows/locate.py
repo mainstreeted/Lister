@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 import tempfile
@@ -82,13 +83,23 @@ class Locator:
             prompt = _PROMPT.format(
                 path=str(shot), w=w, h=h, description=description
             )
+            # The prompt goes in on stdin — `claude -p` reads it there when no
+            # positional prompt is given. It is multi-line; keeping it off the
+            # command line avoids every shell-quoting pitfall.
+            cmd = [
+                self.claude_cli_path, "-p",
+                "--allowedTools", "Read",
+                "--output-format", "json",
+            ]
+            # Windows: npm installs Claude Code as `claude.cmd`. CreateProcess
+            # cannot launch a .cmd/.bat directly, so route it through cmd.exe.
+            if os.name == "nt" and self.claude_cli_path.lower().endswith(
+                (".cmd", ".bat")
+            ):
+                cmd = ["cmd", "/c", *cmd]
             try:
                 proc = subprocess.run(
-                    [
-                        self.claude_cli_path, "-p", prompt,
-                        "--allowedTools", "Read",
-                        "--output-format", "json",
-                    ],
+                    cmd, input=prompt,
                     capture_output=True, text=True, timeout=self.timeout_s,
                 )
             except FileNotFoundError:
